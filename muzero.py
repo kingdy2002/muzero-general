@@ -677,9 +677,9 @@ if __name__ == "__main__":
             elif choice == 2:
                 muzero.diagnose_model(30)
             elif choice == 3:
-                muzero.test(render=True, opponent="self", muzero_player=None)
+                muzero.test(render=True, opponent="self", muzero_player=None, num_gpus = 1)
             elif choice == 4:
-                muzero.test(render=True, opponent="human", muzero_player=0)
+                muzero.test(render=True, opponent="human", muzero_player=0, num_gpus = 1)
             elif choice == 5:
                 env = muzero.Game()
                 env.reset()
@@ -710,3 +710,6 @@ if __name__ == "__main__":
             print("\nDone")
 
     ray.shutdown()
+
+#CUDA_VISIBLE_DEVICES=2,3 nohup  python muzero.py connect4  &\n"
+#CUDA_VISIBLE_DEVICES=2,3 python muzero.py
