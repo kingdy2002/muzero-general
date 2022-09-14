@@ -30,8 +30,8 @@ class MuZeroConfig:
 
 
         ### Self-Play
-        self.num_workers = 1  # Number of simultaneous threads/workers self-playing to feed the replay buffer
-        self.selfplay_on_gpu = False
+        self.num_workers = 5  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.selfplay_on_gpu = True
         self.max_moves = 42  # Maximum number of moves if game is not finished before
         self.num_simulations = 200  # Number of future moves self-simulated
         self.discount = 1  # Chronological discount of the reward
@@ -110,6 +110,12 @@ class MuZeroConfig:
         self.training_delay = 0  # Number of seconds to wait after each training step
         self.ratio = None  # Desired training steps per self played step ratio. Equivalent to a synchronous version, training can take much longer. Set it to None to disable it
         # fmt: on
+        
+        #PC constraint
+        self.PC_constraint = True
+        self.heuristic_len = 5
+        self.historic_len = 5
+        self.pc_value_loss_weight = 3
 
     def visit_softmax_temperature_fn(self, trained_steps):
         """

@@ -7,6 +7,7 @@ import torch
 
 import models
 
+from self_play import MCTS
 
 @ray.remote
 class ReplayBuffer:
@@ -76,7 +77,8 @@ class ReplayBuffer:
             value_batch,
             policy_batch,
             gradient_scale_batch,
-        ) = ([], [], [], [], [], [], [])
+            pc_value_batch
+        ) = ([], [], [], [], [], [], [], [])
         weight_batch = [] if self.config.PER else None
 
         for game_id, game_history, game_prob in self.sample_n_games(
@@ -96,6 +98,12 @@ class ReplayBuffer:
                     len(self.config.action_space),
                 )
             )
+            
+            pc_value = self.make_PC_value(
+                game_history, game_pos
+            )
+            
+            pc_value_batch.append(pc_value)
             action_batch.append(actions)
             value_batch.append(values)
             reward_batch.append(rewards)
@@ -124,6 +132,8 @@ class ReplayBuffer:
         # policy_batch: batch, num_unroll_steps+1, len(action_space)
         # weight_batch: batch
         # gradient_scale_batch: batch, num_unroll_steps+1
+        
+        #pc_value_batch: avg value for PC
         return (
             index_batch,
             (
@@ -134,6 +144,7 @@ class ReplayBuffer:
                 policy_batch,
                 weight_batch,
                 gradient_scale_batch,
+                pc_value_batch
             ),
         )
 
@@ -302,6 +313,37 @@ class ReplayBuffer:
 
         return target_values, target_rewards, target_policies, actions
 
+    def make_PC_value(self,game_history, game_pos) :
+        l = self.config.historic_len
+        k = self.config.heuristic_len
+        historical_path = []
+        heuristical_path = []
+        
+        root, mcts_info = MCTS(self.config).run(
+                        self.model,
+                        game_history.observation_history[game_pos],
+                        self.game.legal_actions(),
+                        self.game.to_play(),
+                        True,
+                    )
+        root_values = (
+                game_history.root_values
+                if game_history.reanalysed_predicted_root_values is None
+                else game_history.reanalysed_predicted_root_values
+            )
+        
+        if game_pos < l :
+           historical_path = root_values[:game_pos]
+        else :
+            historical_path = root_values[game_pos - l:game_pos]
+        
+        heuristical_path = mcts_info['search_path_value']
+        
+        length = len(heuristical_path) + len(historical_path)
+        sum_value = sum(heuristical_path) + sum(historical_path)
+        result = sum_value / length
+        
+        return result
 
 @ray.remote
 class Reanalyse:

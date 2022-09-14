@@ -29,6 +29,7 @@ class SelfPlay:
         self.model.eval()
 
     def continuous_self_play(self, shared_storage, replay_buffer, test_mode=False):
+        total_episode = 0
         while ray.get(
             shared_storage.get_info.remote("training_step")
         ) < self.config.training_steps and not ray.get(
@@ -60,7 +61,7 @@ class SelfPlay:
                     "self" if len(self.config.players) == 1 else self.config.opponent,
                     self.config.muzero_player,
                 )
-
+                total_episode += 1
                 # Save to the shared storage
                 shared_storage.set_info.remote(
                     {
@@ -69,6 +70,7 @@ class SelfPlay:
                         "mean_value": numpy.mean(
                             [value for value in game_history.root_values if value]
                         ),
+                        "total_episode": total_episode,
                     }
                 )
                 if 1 < len(self.config.players):
@@ -119,7 +121,6 @@ class SelfPlay:
         game_history.observation_history.append(observation)
         game_history.reward_history.append(0)
         game_history.to_play_history.append(self.game.to_play())
-
         done = False
 
         if render:
@@ -305,6 +306,7 @@ class MCTS:
                 reward,
                 policy_logits,
                 hidden_state,
+                root_predicted_value
             )
 
         if add_exploration_noise:
@@ -348,15 +350,20 @@ class MCTS:
                 reward,
                 policy_logits,
                 hidden_state,
+                value
             )
 
             self.backpropagate(search_path, value, virtual_to_play, min_max_stats)
 
             max_tree_depth = max(max_tree_depth, current_tree_depth)
-
+            
+        (search_path_value,search_path_hidden_state) =\
+            self.extract_heuristic_path(root,min_max_stats,len = self.config.heuristic_len)
         extra_info = {
             "max_tree_depth": max_tree_depth,
             "root_predicted_value": root_predicted_value,
+            "search_path_value": search_path_value,
+            "search_path_hidden_state":search_path_hidden_state
         }
         return root, extra_info
 
@@ -429,7 +436,18 @@ class MCTS:
         else:
             raise NotImplementedError("More than two player mode not implemented.")
 
-
+    def extract_heuristic_path(self,root,min_max_stats):
+        len = self.config.heuristic_len
+        search_path_value = [root.cal_value]
+        search_path_hidden_state = [root.hidden_state]
+        current_tree_depth = 0
+        node = root
+        while node.expanded() and current_tree_depth < len :
+            current_tree_depth += 1
+            _, node = self.select_child(node, min_max_stats)
+            search_path_value = [node.cal_value]
+            search_path_hidden_state = [node.hidden_state]
+        return search_path_value,search_path_hidden_state
 class Node:
     def __init__(self, prior):
         self.visit_count = 0
@@ -439,6 +457,7 @@ class Node:
         self.children = {}
         self.hidden_state = None
         self.reward = 0
+        self.cal_value = 0
 
     def expanded(self):
         return len(self.children) > 0
@@ -448,7 +467,7 @@ class Node:
             return 0
         return self.value_sum / self.visit_count
 
-    def expand(self, actions, to_play, reward, policy_logits, hidden_state):
+    def expand(self, actions, to_play, reward, policy_logits, hidden_state , cal_value):
         """
         We expand a node using the value, reward and policy prediction obtained from the
         neural network.
@@ -456,6 +475,7 @@ class Node:
         self.to_play = to_play
         self.reward = reward
         self.hidden_state = hidden_state
+        self.cal_value = cal_value
 
         policy_values = torch.softmax(
             torch.tensor([policy_logits[0][a] for a in actions]), dim=0
@@ -492,6 +512,9 @@ class GameHistory:
         # For PER
         self.priorities = None
         self.game_priority = None
+        # For PC constraint
+        self.heuristic_path_value_sum = []
+        self.heuristic_path_value_count = []
 
     def store_search_statistics(self, root, action_space):
         # Turn visit count from root into a policy

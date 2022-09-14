@@ -77,6 +77,7 @@ class Trainer:
                 value_loss,
                 reward_loss,
                 policy_loss,
+                pc_value_loss
             ) = self.update_weights(batch)
 
             if self.config.PER:
@@ -103,6 +104,7 @@ class Trainer:
                     "value_loss": value_loss,
                     "reward_loss": reward_loss,
                     "policy_loss": policy_loss,
+                    "pc_value_loss":pc_value_loss
                 }
             )
 
@@ -134,6 +136,7 @@ class Trainer:
             target_policy,
             weight_batch,
             gradient_scale_batch,
+            pc_value_batch
         ) = batch
 
         # Keep values as scalars for calculating the priorities for the prioritized replay
@@ -151,6 +154,7 @@ class Trainer:
         target_reward = torch.tensor(target_reward).float().to(device)
         target_policy = torch.tensor(target_policy).float().to(device)
         gradient_scale_batch = torch.tensor(gradient_scale_batch).float().to(device)
+        target_pc_value = torch.tensor(pc_value_batch).float().to(device)
         # observation_batch: batch, channels, height, width
         # action_batch: batch, num_unroll_steps+1, 1 (unsqueeze)
         # target_value: batch, num_unroll_steps+1
@@ -162,6 +166,7 @@ class Trainer:
         target_reward = models.scalar_to_support(
             target_reward, self.config.support_size
         )
+        target_pc_value = models.scalar_to_support(target_pc_value, self.config.support_size)
         # target_value: batch, num_unroll_steps+1, 2*support_size+1
         # target_reward: batch, num_unroll_steps+1, 2*support_size+1
 
@@ -180,19 +185,32 @@ class Trainer:
         # predictions: num_unroll_steps+1, 3, batch, 2*support_size+1 | 2*support_size+1 | 9 (according to the 2nd dim)
 
         ## Compute losses
-        value_loss, reward_loss, policy_loss = (0, 0, 0)
+        value_loss, pc_value_loss, reward_loss, policy_loss = (0, 0, 0, 0)
         value, reward, policy_logits = predictions[0]
+        current_pc_value_loss = 0
         # Ignore reward loss for the first batch step
-        current_value_loss, _, current_policy_loss = self.loss_function(
-            value.squeeze(-1),
-            reward.squeeze(-1),
-            policy_logits,
-            target_value[:, 0],
-            target_reward[:, 0],
-            target_policy[:, 0],
-        )
+        if self.config.PC_constraint :
+            current_value_loss, current_pc_value_loss, _, current_policy_loss = self.loss_function_for_pc_value(
+                value.squeeze(-1),
+                reward.squeeze(-1),
+                policy_logits,
+                target_value[:, 0],
+                target_reward[:, 0],
+                target_policy[:, 0],
+                target_pc_value[:, 0]
+            )
+        else :
+            current_value_loss, _, current_policy_loss = self.loss_function(
+                value.squeeze(-1),
+                reward.squeeze(-1),
+                policy_logits,
+                target_value[:, 0],
+                target_reward[:, 0],
+                target_policy[:, 0],
+            )
         value_loss += current_value_loss
         policy_loss += current_policy_loss
+        pc_value_loss += current_pc_value_loss
         # Compute priorities for the prioritized replay (See paper appendix Training)
         pred_value_scalar = (
             models.support_to_scalar(value, self.config.support_size)
@@ -208,18 +226,35 @@ class Trainer:
 
         for i in range(1, len(predictions)):
             value, reward, policy_logits = predictions[i]
-            (
-                current_value_loss,
-                current_reward_loss,
-                current_policy_loss,
-            ) = self.loss_function(
-                value.squeeze(-1),
-                reward.squeeze(-1),
-                policy_logits,
-                target_value[:, i],
-                target_reward[:, i],
-                target_policy[:, i],
-            )
+            
+            if self.config.PC_constraint :
+                (
+                    current_value_loss,
+                    current_pc_value_loss,
+                    current_reward_loss,
+                    current_policy_loss,
+                ) = self.loss_function_for_pc_value(
+                    value.squeeze(-1),
+                    reward.squeeze(-1),
+                    policy_logits,
+                    target_value[:, i],
+                    target_reward[:, i],
+                    target_policy[:, i],
+                    target_pc_value[:, i]
+                )            
+            else :
+                (
+                    current_value_loss,
+                    current_reward_loss,
+                    current_policy_loss,
+                ) = self.loss_function(
+                    value.squeeze(-1),
+                    reward.squeeze(-1),
+                    policy_logits,
+                    target_value[:, i],
+                    target_reward[:, i],
+                    target_policy[:, i],
+                )
 
             # Scale gradient by the number of unroll steps (See paper appendix Training)
             current_value_loss.register_hook(
@@ -231,10 +266,17 @@ class Trainer:
             current_policy_loss.register_hook(
                 lambda grad: grad / gradient_scale_batch[:, i]
             )
+            
+            if self.config.PC_constraint :
+                current_pc_value_loss.register_hook(
+                    lambda grad: grad / gradient_scale_batch[:, i]
+                )
 
             value_loss += current_value_loss
+            pc_value_loss += current_pc_value_loss
             reward_loss += current_reward_loss
             policy_loss += current_policy_loss
+            
 
             # Compute priorities for the prioritized replay (See paper appendix Training)
             pred_value_scalar = (
@@ -250,7 +292,7 @@ class Trainer:
             )
 
         # Scale the value loss, paper recommends by 0.25 (See paper appendix Reanalyze)
-        loss = value_loss * self.config.value_loss_weight + reward_loss + policy_loss
+        loss = value_loss * self.config.value_loss_weight + reward_loss + policy_loss + pc_value_loss * self.config.pc_value_loss_weight
         if self.config.PER:
             # Correct PER bias by using importance-sampling (IS) weights
             loss *= weight_batch
@@ -270,6 +312,7 @@ class Trainer:
             value_loss.mean().item(),
             reward_loss.mean().item(),
             policy_loss.mean().item(),
+            pc_value_loss.mean().item()
         )
 
     def update_lr(self):
@@ -298,3 +341,22 @@ class Trainer:
             1
         )
         return value_loss, reward_loss, policy_loss
+
+    @staticmethod
+    def loss_function_for_pc_value(
+        value,
+        reward,
+        policy_logits,
+        target_value,
+        target_reward,
+        target_policy,
+        target_pc_value
+    ):
+        # Cross-entropy seems to have a better convergence than MSE
+        value_loss = (-target_value * torch.nn.LogSoftmax(dim=1)(value)).sum(1)
+        pc_value_loss = (-target_pc_value * torch.nn.LogSoftmax(dim=1)(value)).sum(1)
+        reward_loss = (-target_reward * torch.nn.LogSoftmax(dim=1)(reward)).sum(1)
+        policy_loss = (-target_policy * torch.nn.LogSoftmax(dim=1)(policy_logits)).sum(
+            1
+        )
+        return value_loss,pc_value_loss, reward_loss, policy_loss

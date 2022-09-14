@@ -1,3 +1,4 @@
+from collections import deque
 import copy
 import importlib
 import json
@@ -110,10 +111,12 @@ class MuZero:
             "value_loss": 0,
             "reward_loss": 0,
             "policy_loss": 0,
+            "pc_value_loss": 0,
             "num_played_games": 0,
             "num_played_steps": 0,
             "num_reanalysed_games": 0,
             "terminate": False,
+            "total_episode":0
         }
         self.replay_buffer = {}
 
@@ -248,6 +251,7 @@ class MuZero:
         # Loop for updating the training performance
         counter = 0
         keys = [
+            "total_episode",
             "total_reward",
             "muzero_reward",
             "opponent_reward",
@@ -264,9 +268,13 @@ class MuZero:
             "num_reanalysed_games",
         ]
         info = ray.get(self.shared_storage_worker.get_info.remote(keys))
+        last_win = deque(maxlen=20)
+        episode = 0
+        win_ratio = 0
         try:
             while info["training_step"] < self.config.training_steps:
                 info = ray.get(self.shared_storage_worker.get_info.remote(keys))
+                
                 writer.add_scalar(
                     "1.Total_reward/1.Total_reward",
                     info["total_reward"],
@@ -320,10 +328,18 @@ class MuZero:
                 writer.add_scalar("3.Loss/Value_loss", info["value_loss"], counter)
                 writer.add_scalar("3.Loss/Reward_loss", info["reward_loss"], counter)
                 writer.add_scalar("3.Loss/Policy_loss", info["policy_loss"], counter)
+                if episode != info["total_episode"] :
+                    episode = info["total_episode"]
+                    last_win.append(1 if info["muzero_reward"] == 10 else 0)
+                    win_ratio = sum(last_win)/len(last_win)
+                writer.add_scalar("4.Benchmark/1.Win_ratio", win_ratio, counter)
+                writer.add_scalar("4.Benchmark/2.Total_episode", info["total_episode"], counter)
                 print(
-                    f'Last test reward: {info["total_reward"]:.2f}. Training step: {info["training_step"]}/{self.config.training_steps}. Played games: {info["num_played_games"]}. Loss: {info["total_loss"]:.2f}',
+                    f'Win ratio : {win_ratio}. Last test reward: {info["total_reward"]:.2f}. Training step: {info["training_step"]}/{self.config.training_steps}. Played games: {info["num_played_games"]}. Loss: {info["total_loss"]:.2f}',
                     end="\r",
                 )
+                if win_ratio > 0.8 and counter > 100 :
+                    break
                 counter += 1
                 time.sleep(0.5)
         except KeyboardInterrupt:
