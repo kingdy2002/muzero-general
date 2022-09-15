@@ -154,7 +154,8 @@ class Trainer:
         target_reward = torch.tensor(target_reward).float().to(device)
         target_policy = torch.tensor(target_policy).float().to(device)
         gradient_scale_batch = torch.tensor(gradient_scale_batch).float().to(device)
-        target_pc_value = torch.tensor(pc_value_batch).float().to(device)
+        if self.config.PC_constraint :
+            target_pc_value = torch.tensor(pc_value_batch).float().to(device)
         # observation_batch: batch, channels, height, width
         # action_batch: batch, num_unroll_steps+1, 1 (unsqueeze)
         # target_value: batch, num_unroll_steps+1
@@ -166,7 +167,9 @@ class Trainer:
         target_reward = models.scalar_to_support(
             target_reward, self.config.support_size
         )
-        target_pc_value = models.scalar_to_support(target_pc_value, self.config.support_size)
+        
+        if self.config.PC_constraint :
+            target_pc_value = models.scalar_to_support(target_pc_value, self.config.support_size)
         # target_value: batch, num_unroll_steps+1, 2*support_size+1
         # target_reward: batch, num_unroll_steps+1, 2*support_size+1
 
@@ -304,16 +307,26 @@ class Trainer:
         loss.backward()
         self.optimizer.step()
         self.training_step += 1
-
-        return (
-            priorities,
-            # For log purpose
-            loss.item(),
-            value_loss.mean().item(),
-            reward_loss.mean().item(),
-            policy_loss.mean().item(),
-            pc_value_loss.mean().item()
-        )
+        if self.config.PC_constraint : 
+            return (
+                priorities,
+                # For log purpose
+                loss.item(),
+                value_loss.mean().item(),
+                reward_loss.mean().item(),
+                policy_loss.mean().item(),
+                pc_value_loss.mean().item()
+            )
+        else :
+            return (
+                priorities,
+                # For log purpose
+                loss.item(),
+                value_loss.mean().item(),
+                reward_loss.mean().item(),
+                policy_loss.mean().item(),
+                0
+            )
 
     def update_lr(self):
         """

@@ -15,8 +15,9 @@ class ReplayBuffer:
     Class which run in a dedicated thread to store played games and generate batch.
     """
 
-    def __init__(self, initial_checkpoint, initial_buffer, config):
+    def __init__(self, initial_checkpoint, initial_buffer, config, shared_storage):
         self.config = config
+        self.shared_storage = shared_storage
         self.buffer = copy.deepcopy(initial_buffer)
         self.num_played_games = initial_checkpoint["num_played_games"]
         self.num_played_steps = initial_checkpoint["num_played_steps"]
@@ -30,6 +31,11 @@ class ReplayBuffer:
 
         # Fix random generator seed
         numpy.random.seed(self.config.seed)
+        
+        self.model = models.MuZeroNetwork(self.config)
+        self.model.set_weights(initial_checkpoint["weights"])
+        self.model.to(torch.device("cuda" if self.config.replay_buffer_on_gpu else "cpu"))
+        self.model.eval()
 
     def save_game(self, game_history, shared_storage=None):
         if self.config.PER:
@@ -86,7 +92,7 @@ class ReplayBuffer:
         ):
             game_pos, pos_prob = self.sample_position(game_history)
 
-            values, rewards, policies, actions = self.make_target(
+            values, rewards, policies, actions, pc_value = self.make_target(
                 game_history, game_pos
             )
 
@@ -99,9 +105,6 @@ class ReplayBuffer:
                 )
             )
             
-            pc_value = self.make_PC_value(
-                game_history, game_pos
-            )
             
             pc_value_batch.append(pc_value)
             action_batch.append(actions)
@@ -276,19 +279,25 @@ class ReplayBuffer:
         """
         Generate targets for every unroll steps.
         """
-        target_values, target_rewards, target_policies, actions = [], [], [], []
+        target_values, target_rewards, target_policies, actions , pc_values = [], [], [], [], []
         for current_index in range(
             state_index, state_index + self.config.num_unroll_steps + 1
         ):
             value = self.compute_target_value(game_history, current_index)
-
+            pc_value = 0
             if current_index < len(game_history.root_values):
+                if self.config.replay_buffer_on_gpu :
+                    pc_value = self.make_PC_value(
+                        game_history, state_index
+                    )
                 target_values.append(value)
+                pc_values.append(pc_value)
                 target_rewards.append(game_history.reward_history[current_index])
                 target_policies.append(game_history.child_visits[current_index])
                 actions.append(game_history.action_history[current_index])
             elif current_index == len(game_history.root_values):
                 target_values.append(0)
+                pc_values.append(pc_value)
                 target_rewards.append(game_history.reward_history[current_index])
                 # Uniform policy
                 target_policies.append(
@@ -301,6 +310,7 @@ class ReplayBuffer:
             else:
                 # States past the end of games are treated as absorbing states
                 target_values.append(0)
+                pc_values.append(pc_value)
                 target_rewards.append(0)
                 # Uniform policy
                 target_policies.append(
@@ -311,7 +321,7 @@ class ReplayBuffer:
                 )
                 actions.append(numpy.random.choice(self.config.action_space))
 
-        return target_values, target_rewards, target_policies, actions
+        return target_values, target_rewards, target_policies, actions , pc_values
 
     def make_PC_value(self,game_history, game_pos) :
         l = self.config.historic_len
@@ -319,11 +329,13 @@ class ReplayBuffer:
         historical_path = []
         heuristical_path = []
         
+        self.model.set_weights(ray.get(self.shared_storage.get_info.remote("weights")))
+        
         root, mcts_info = MCTS(self.config).run(
                         self.model,
                         game_history.observation_history[game_pos],
-                        self.game.legal_actions(),
-                        self.game.to_play(),
+                        game_history.legal_actions_history[game_pos],
+                        game_history.to_play_history[game_pos],
                         True,
                     )
         root_values = (
@@ -333,11 +345,11 @@ class ReplayBuffer:
             )
         
         if game_pos < l :
-           historical_path = root_values[:game_pos]
+           historical_path = root_values[:game_pos:2]
         else :
-            historical_path = root_values[game_pos - l:game_pos]
+            historical_path = root_values[game_pos - 2*l:game_pos+1:2]
         
-        heuristical_path = mcts_info['search_path_value']
+        heuristical_path = mcts_info['search_path_value'][:2*k:2]
         
         length = len(heuristical_path) + len(historical_path)
         sum_value = sum(heuristical_path) + sum(historical_path)

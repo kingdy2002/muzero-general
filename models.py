@@ -626,6 +626,46 @@ class MuZeroResidualNetwork(AbstractNetwork):
 ########### End ResNet ###########
 ##################################
 
+class ProjectionNetwork(AbstractNetwork):
+    
+    def __init__(
+        self,
+        observation_shape,
+        num_channels,
+        proj_hid = 256
+    ):
+        super().__init__()
+        proj_hid = proj_hid
+        in_dim = num_channels * math.ceil(observation_shape[1] / 16) * math.ceil(observation_shape[2] / 16)
+        self.porjection_in_dim = in_dim
+        self.projection = torch.nn.Sequential(
+            torch.nn.Linear(self.porjection_in_dim, self.proj_hid),
+            torch.nn.BatchNorm1d(self.proj_hid),
+            torch.nn.ReLU(),
+            torch.nn.Linear(self.proj_hid, self.proj_hid),
+            torch.nn.BatchNorm1d(self.proj_hid),
+            torch.nn.ReLU(),
+            torch.nn.Linear(self.proj_hid, self.proj_out),
+            torch.nn.BatchNorm1d(self.proj_out)
+        )
+        self.projection_head = torch.nn.Sequential(
+            torch.nn.Linear(self.proj_out, self.pred_hid),
+            torch.nn.BatchNorm1d(self.pred_hid),
+            torch.nn.ReLU(),
+            torch.nn.Linear(self.pred_hid, self.pred_out),
+        )
+        
+    def project(self, hidden_state, with_grad=True):
+        # only the branch of proj + pred can share the gradients
+        hidden_state = hidden_state.view(-1, self.porjection_in_dim)
+        proj = self.projection(hidden_state)
+
+        # with grad, use proj_head
+        if with_grad:
+            proj = self.projection_head(proj)
+            return proj
+        else:
+            return proj.detach()
 
 def mlp(
     input_size,

@@ -121,6 +121,7 @@ class SelfPlay:
         game_history.observation_history.append(observation)
         game_history.reward_history.append(0)
         game_history.to_play_history.append(self.game.to_play())
+        game_history.legal_actions_history.append(self.game.legal_actions())
         done = False
 
         if render:
@@ -180,6 +181,7 @@ class SelfPlay:
                 game_history.observation_history.append(observation)
                 game_history.reward_history.append(reward)
                 game_history.to_play_history.append(self.game.to_play())
+                game_history.legal_actions_history.append(self.game.legal_actions())
 
         return game_history
 
@@ -358,7 +360,7 @@ class MCTS:
             max_tree_depth = max(max_tree_depth, current_tree_depth)
             
         (search_path_value,search_path_hidden_state) =\
-            self.extract_heuristic_path(root,min_max_stats,len = self.config.heuristic_len)
+            self.extract_heuristic_path(root,min_max_stats)
         extra_info = {
             "max_tree_depth": max_tree_depth,
             "root_predicted_value": root_predicted_value,
@@ -508,6 +510,7 @@ class GameHistory:
         self.to_play_history = []
         self.child_visits = []
         self.root_values = []
+        self.legal_actions_history = []
         self.reanalysed_predicted_root_values = None
         # For PER
         self.priorities = None

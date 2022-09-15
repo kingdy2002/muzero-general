@@ -149,6 +149,7 @@ class MuZero:
                 + self.config.num_workers * self.config.selfplay_on_gpu
                 + log_in_tensorboard * self.config.selfplay_on_gpu
                 + self.config.use_last_model_value * self.config.reanalyse_on_gpu
+                + self.config.replay_buffer_on_gpu
             )
             if 1 < num_gpus_per_worker:
                 num_gpus_per_worker = math.floor(num_gpus_per_worker)
@@ -167,8 +168,10 @@ class MuZero:
         )
         self.shared_storage_worker.set_info.remote("terminate", False)
 
-        self.replay_buffer_worker = replay_buffer.ReplayBuffer.remote(
-            self.checkpoint, self.replay_buffer, self.config
+        self.replay_buffer_worker = replay_buffer.ReplayBuffer.options(
+                num_gpus=num_gpus_per_worker if self.config.replay_buffer_on_gpu else 0,
+            ).remote(
+            self.checkpoint, self.replay_buffer, self.config , self.shared_storage_worker
         )
 
         if self.config.use_last_model_value:
