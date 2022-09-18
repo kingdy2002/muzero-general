@@ -87,14 +87,21 @@ class ReplayBuffer:
         ) = ([], [], [], [], [], [], [], [])
         weight_batch = [] if self.config.PER else None
 
+        game_historys = []
+        list_game_pos = []
+        
         for game_id, game_history, game_prob in self.sample_n_games(
             self.config.batch_size
         ):
             game_pos, pos_prob = self.sample_position(game_history)
 
-            values, rewards, policies, actions, pc_value = self.make_target(
+            game_historys.append(game_history)
+            list_game_pos.append(game_pos)
+
+            values, rewards, policies, actions = self.make_target(
                 game_history, game_pos
             )
+            
 
             index_batch.append([game_id, game_pos])
             observation_batch.append(
@@ -106,7 +113,6 @@ class ReplayBuffer:
             )
             
             
-            pc_value_batch.append(pc_value)
             action_batch.append(actions)
             value_batch.append(values)
             reward_batch.append(rewards)
@@ -128,6 +134,12 @@ class ReplayBuffer:
                 weight_batch
             )
 
+        if self.config.PC_constraint :
+            pc_value_batch = self.get_pc_value_batch(game_historys,list_game_pos)
+            lis = []
+            for pc_value in pc_value_batch :
+                lis.append(numpy.pad(pc_value, (0, self.config.num_unroll_steps + 1), 'constant', constant_values=0)[:self.config.num_unroll_steps + 1])
+            pc_value_batch = numpy.array(lis)
         # observation_batch: batch, channels, height, width
         # action_batch: batch, num_unroll_steps+1
         # value_batch: batch, num_unroll_steps+1
@@ -279,25 +291,18 @@ class ReplayBuffer:
         """
         Generate targets for every unroll steps.
         """
-        target_values, target_rewards, target_policies, actions , pc_values = [], [], [], [], []
+        target_values, target_rewards, target_policies, actions  = [], [], [], []
         for current_index in range(
             state_index, state_index + self.config.num_unroll_steps + 1
         ):
             value = self.compute_target_value(game_history, current_index)
-            pc_value = 0
             if current_index < len(game_history.root_values):
-                if self.config.replay_buffer_on_gpu :
-                    pc_value = self.make_PC_value(
-                        game_history, state_index
-                    )
                 target_values.append(value)
-                pc_values.append(pc_value)
                 target_rewards.append(game_history.reward_history[current_index])
                 target_policies.append(game_history.child_visits[current_index])
                 actions.append(game_history.action_history[current_index])
             elif current_index == len(game_history.root_values):
                 target_values.append(0)
-                pc_values.append(pc_value)
                 target_rewards.append(game_history.reward_history[current_index])
                 # Uniform policy
                 target_policies.append(
@@ -310,7 +315,6 @@ class ReplayBuffer:
             else:
                 # States past the end of games are treated as absorbing states
                 target_values.append(0)
-                pc_values.append(pc_value)
                 target_rewards.append(0)
                 # Uniform policy
                 target_policies.append(
@@ -321,42 +325,194 @@ class ReplayBuffer:
                 )
                 actions.append(numpy.random.choice(self.config.action_space))
 
-        return target_values, target_rewards, target_policies, actions , pc_values
+        return target_values, target_rewards, target_policies, actions 
 
-    def make_PC_value(self,game_history, game_pos) :
-        l = self.config.historic_len
-        k = self.config.heuristic_len
-        historical_path = []
-        heuristical_path = []
-        
-        self.model.set_weights(ray.get(self.shared_storage.get_info.remote("weights")))
-        
-        root, mcts_info = MCTS(self.config).run(
-                        self.model,
-                        game_history.observation_history[game_pos],
-                        game_history.legal_actions_history[game_pos],
-                        game_history.to_play_history[game_pos],
-                        True,
+    def get_pc_value_batch(self,game_historys,list_game_pos) :
+        observation_batchs , action_batchs , index_batchs = self.get_pre_batch_for_pc_value_batch(game_historys,list_game_pos)
+        sum_of_value = [[] for i in range(len(observation_batchs))] 
+        batchs = self.get_batch_for_pc_value_batch(action_batchs,self.config.heuristic_len)
+        first = 1
+        device = torch.device("cuda" if self.config.selfplay_on_gpu else "cpu")
+        hidden_state = []
+        with torch.no_grad(): 
+            for action_batch,observation_indexs in batchs :
+                action_batch = torch.tensor(action_batch).long().to(device).unsqueeze(-1)
+                observation_batch = (
+                    torch.tensor(numpy.array(observation_batchs)).float().to(device)
+                )
+                if first : 
+                    value, reward, policy_logits, hidden_state = self.model.initial_inference(
+                        observation_batch
                     )
-        root_values = (
+                    first = 0
+                    
+                value, reward, policy_logits, hidden_state = self.model.recurrent_inference(
+                        hidden_state, action_batch
+                )
+                value = torch.index_select(value, 0, torch.LongTensor(observation_indexs).to(device))
+                
+                for i,val in zip(observation_indexs , models.support_to_scalar(value, self.config.support_size).detach().cpu().numpy().squeeze()) :
+                    if len(sum_of_value) % 2 == 0 :
+                        sum_of_value[i].append(-val)
+                    else :
+                        sum_of_value[i].append(val)
+                
+                
+            pc_value_batch = self.reconstruct_pc_value(game_historys,sum_of_value,index_batchs)
+            
+        return pc_value_batch
+            
+    def get_pre_batch_for_pc_value_batch(self,game_historys, list_game_pos) :
+        observation_batchs , action_batchs, index_batchs = [], [] , []
+        for state_index,game_history in zip(list_game_pos,game_historys) :
+            if (state_index + self.config.num_unroll_steps) >= len(game_history.root_values) :
+                end = len(game_history.root_values)
+            else :
+                end = state_index + self.config.num_unroll_step
+            indexs = list(range(state_index, end + 1))
+            index_batchs.append(indexs)
+            observation_batch, action_batch = self.game_history_2_observation_action(game_history, indexs)
+            observation_batchs.extend(observation_batch)
+            action_batchs.extend(action_batch)
+        return observation_batchs , action_batchs , index_batchs
+
+    def game_history_2_observation_action(self,game_history, indexs) :
+        observation_batch = []
+        action_batch = []
+        for game_pos in indexs :
+            observation_batch.append(
+                game_history.get_stacked_observations(
+                    game_pos,
+                    self.config.stacked_observations,
+                    len(self.config.action_space),
+                )
+            )
+            action_batch.append(game_history.heuristic_path_action[game_pos])  
+
+        return observation_batch, action_batch
+
+    def get_batch_for_pc_value_batch(self,action_batchs, length) :
+        for index in range(length) :
+            action_batch,observation_indexs = [],[]
+            for i, actions in enumerate(action_batchs) :
+                if len(actions) > index :
+                    observation_indexs.append(i)
+                    action_batch.append(actions[index])
+                else :
+                    action_batch.append(0)
+            yield action_batch ,observation_indexs
+    
+    def reconstruct_pc_value(self,game_historys,sum_of_value,index_batchs) :
+        heruistical_value = self.cal_heruistical_value(sum_of_value,index_batchs)
+        historical_value = self.cal_historical_value(game_historys,index_batchs)
+        pc_value_batch = []
+        for heruistical_paths,historical_paths in zip(heruistical_value,historical_value) :
+            lis = []
+            for heruistical_path,historical_path in zip(heruistical_paths,historical_paths) :
+                value = (sum(heruistical_path) + sum(historical_path)) / (len(heruistical_path) + len(historical_path))
+                lis.append(value)
+            pc_value_batch.append(lis)
+        return pc_value_batch
+    
+    def cal_heruistical_value(self,sum_of_value,index_batchs) :
+        index = 0
+        value_batch = []
+        for indexs in index_batchs :
+            length = len(indexs)
+            lis = []
+            for i in range(length) :
+                lis.append(sum_of_value[index])
+                index += 1
+            if length < self.config.num_unroll_steps :
+                for i in range(self.config.num_unroll_steps - length) :
+                    lis.append([0])
+            value_batch.append(lis)
+            
+            
+        return value_batch
+    
+    def cal_historical_value(self,game_historys,index_batchs):
+        historical_path = []
+        historical_batch = []
+        for game_history,indexs in zip(game_historys,index_batchs) :
+            root_values = (
                 game_history.root_values
                 if game_history.reanalysed_predicted_root_values is None
                 else game_history.reanalysed_predicted_root_values
             )
-        
-        if game_pos < l :
-           historical_path = root_values[:game_pos:2]
-        else :
-            historical_path = root_values[game_pos - 2*l:game_pos+1:2]
-        
-        heuristical_path = mcts_info['search_path_value'][:2*k:2]
-        
-        length = len(heuristical_path) + len(historical_path)
-        sum_value = sum(heuristical_path) + sum(historical_path)
-        result = sum_value / length
+            lis = []
+            for game_pos in indexs :
+            
+                if game_pos < self.config.historic_len :
+                    historical_path = [i * (-1)**n for n,i in enumerate(root_values[game_pos: : -1])]
+                
+                else :
+                    historical_path = [i * (-1)**n for n,i in enumerate(root_values[game_pos : game_pos-self.config.historic_len-1 : -1])]
+                lis.append(historical_path)
+            historical_batch.append(lis)
+        return historical_batch
+"""
+    def make_PC_value(self,game_history, indexs) :
+        l = self.config.historic_len
+        k = self.config.heuristic_len
+        device = torch.device("cuda" if self.config.selfplay_on_gpu else "cpu")
+        historical_path = []
+        heuristical_path = []
+        observation_batch = []
+        action_batch = []
+        for game_pos in indexs :
+            observation_batch.append(
+                game_history.get_stacked_observations(
+                    game_pos,
+                    self.config.stacked_observations,
+                    len(self.config.action_space),
+                )
+            )
+            action_batch.append(game_history.heuristic_path_action[game_pos])   
+        self.model.set_weights(ray.get(self.shared_storage.get_info.remote("weights")))
+        with torch.no_grad():         
+            root_values = (
+                    game_history.root_values
+                    if game_history.reanalysed_predicted_root_values is None
+                    else game_history.reanalysed_predicted_root_values
+                )
+            
+            
+            observation_batch = (
+                torch.tensor(numpy.array(observation_batch)).float().to(device)
+            )
+
+            
+            value, reward, policy_logits, hidden_state = self.model.initial_inference(
+                observation_batch
+            )
+            
+            for i in range(0, k):
+                value, reward, policy_logits, hidden_state = self.model.recurrent_inference(
+                    hidden_state, torch.tensor(action_batch[:,i]).to(device)
+                )
+                value = models.support_to_scalar(value, self.config.support_size).detach().cpu().numpy().squeeze()
+                heuristical_path.append(value)
+            
+            
+            if game_pos < l :
+                historical_path = [i * (-1)**(n+1) for n,i in enumerate(root_values[:game_pos : -1])]
+            
+            else :
+                historical_path = [i * (-1)**(n+1) for n,i in enumerate(root_values[game_pos -i :game_pos : -1])]
+            
+            if len(heuristical_path) < k :
+                heuristical_path = [i * (-1)**(n+1) for n,i in enumerate(heuristical_path)]
+            else :
+                heuristical_path = [i * (-1)**(n+1) for n,i in enumerate(heuristical_path[:k])]
+                
+            length = len(heuristical_path) + len(historical_path) + 1
+            sum_value = sum(heuristical_path) + sum(historical_path) + root_values[game_pos]
+            result = sum_value / length
         
         return result
-
+"""
+    
 @ray.remote
 class Reanalyse:
     """

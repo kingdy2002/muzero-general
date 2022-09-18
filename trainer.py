@@ -226,7 +226,6 @@ class Trainer:
             numpy.abs(pred_value_scalar - target_value_scalar[:, 0])
             ** self.config.PER_alpha
         )
-
         for i in range(1, len(predictions)):
             value, reward, policy_logits = predictions[i]
             

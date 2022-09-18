@@ -169,7 +169,8 @@ class MuZero:
         self.shared_storage_worker.set_info.remote("terminate", False)
 
         self.replay_buffer_worker = replay_buffer.ReplayBuffer.options(
-                num_gpus=num_gpus_per_worker if self.config.replay_buffer_on_gpu else 0,
+                num_cpus=0,
+                num_gpus=num_gpus_per_worker  if self.config.replay_buffer_on_gpu else 0,
             ).remote(
             self.checkpoint, self.replay_buffer, self.config , self.shared_storage_worker
         )

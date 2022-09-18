@@ -122,6 +122,7 @@ class SelfPlay:
         game_history.reward_history.append(0)
         game_history.to_play_history.append(self.game.to_play())
         game_history.legal_actions_history.append(self.game.legal_actions())
+        game_history.heuristic_path_action.append([])
         done = False
 
         if render:
@@ -163,10 +164,13 @@ class SelfPlay:
                         print(
                             f"Root value for player {self.game.to_play()}: {root.value():.2f}"
                         )
+                    game_history.heuristic_path_action.append(mcts_info['action_process'])
+                    
                 else:
                     action, root = self.select_opponent_action(
                         opponent, stacked_observations
                     )
+                    game_history.heuristic_path_action.append([])
 
                 observation, reward, done = self.game.step(action)
 
@@ -359,13 +363,14 @@ class MCTS:
 
             max_tree_depth = max(max_tree_depth, current_tree_depth)
             
-        (search_path_value,search_path_hidden_state) =\
+        (search_path_value,search_path_hidden_state , action_process) =\
             self.extract_heuristic_path(root,min_max_stats)
         extra_info = {
             "max_tree_depth": max_tree_depth,
             "root_predicted_value": root_predicted_value,
             "search_path_value": search_path_value,
-            "search_path_hidden_state":search_path_hidden_state
+            "search_path_hidden_state":search_path_hidden_state,
+            "action_process":action_process
         }
         return root, extra_info
 
@@ -442,14 +447,16 @@ class MCTS:
         len = self.config.heuristic_len
         search_path_value = [root.cal_value]
         search_path_hidden_state = [root.hidden_state]
+        search_action_process = []
         current_tree_depth = 0
         node = root
         while node.expanded() and current_tree_depth < len :
             current_tree_depth += 1
-            _, node = self.select_child(node, min_max_stats)
-            search_path_value = [node.cal_value]
-            search_path_hidden_state = [node.hidden_state]
-        return search_path_value,search_path_hidden_state
+            action, node = self.select_child(node, min_max_stats)
+            search_path_value.append(node.cal_value)
+            search_path_hidden_state.append(node.hidden_state)
+            search_action_process.append(action)
+        return search_path_value,search_path_hidden_state ,search_action_process
 class Node:
     def __init__(self, prior):
         self.visit_count = 0
@@ -518,6 +525,7 @@ class GameHistory:
         # For PC constraint
         self.heuristic_path_value_sum = []
         self.heuristic_path_value_count = []
+        self.heuristic_path_action = []
 
     def store_search_statistics(self, root, action_space):
         # Turn visit count from root into a policy
