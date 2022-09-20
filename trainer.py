@@ -7,6 +7,7 @@ import torch
 
 import models
 
+import torch.nn.functional as F
 
 @ray.remote
 class Trainer:
@@ -77,7 +78,8 @@ class Trainer:
                 value_loss,
                 reward_loss,
                 policy_loss,
-                pc_value_loss
+                pc_value_loss,
+                consist_loss
             ) = self.update_weights(batch)
 
             if self.config.PER:
@@ -104,7 +106,8 @@ class Trainer:
                     "value_loss": value_loss,
                     "reward_loss": reward_loss,
                     "policy_loss": policy_loss,
-                    "pc_value_loss":pc_value_loss
+                    "pc_value_loss":pc_value_loss,
+                    "consist_loss":consist_loss
                 }
             )
 
@@ -140,7 +143,10 @@ class Trainer:
         ) = batch
 
         # Keep values as scalars for calculating the priorities for the prioritized replay
-        target_value_scalar = numpy.array(target_value, dtype="float32")
+        total_support_size = self.config.support_size * 2 + 1
+        support = numpy.array(i / total_support_size for i in range(total_support_size))
+        target_value_scalar = target_value * support
+        target_value_scalar = numpy.sum(target_value_scalar,axis=-1)
         priorities = numpy.zeros_like(target_value_scalar)
 
         device = next(self.model.parameters()).device
@@ -163,7 +169,6 @@ class Trainer:
         # target_policy: batch, num_unroll_steps+1, len(action_space)
         # gradient_scale_batch: batch, num_unroll_steps+1
 
-        target_value = models.scalar_to_support(target_value, self.config.support_size)
         target_reward = models.scalar_to_support(
             target_reward, self.config.support_size
         )
@@ -172,12 +177,18 @@ class Trainer:
             target_pc_value = models.scalar_to_support(target_pc_value, self.config.support_size)
         # target_value: batch, num_unroll_steps+1, 2*support_size+1
         # target_reward: batch, num_unroll_steps+1, 2*support_size+1
-
+        projection_batch = []
+        projection_target_batch = []
+        value_feature_batch = []
+        value_feature_target_batch = []
         ## Generate predictions
         value, reward, policy_logits, hidden_state = self.model.initial_inference(
             observation_batch
         )
         predictions = [(value, reward, policy_logits)]
+        #make representation self-supervised batch
+        if self.config.representation_consistency :
+            projection_batch.append( self.model.project(hidden_state,with_grad = True))
         for i in range(1, action_batch.shape[1]):
             value, reward, policy_logits, hidden_state = self.model.recurrent_inference(
                 hidden_state, action_batch[:, i]
@@ -185,8 +196,13 @@ class Trainer:
             # Scale the gradient at the start of the dynamics function (See paper appendix Training)
             hidden_state.register_hook(lambda grad: grad * 0.5)
             predictions.append((value, reward, policy_logits))
+            #make representation self-supervised batch
+            if self.config.representation_consistency :
+                projection_batch.append( self.model.project(hidden_state,with_grad = True))
+                projection_target_batch.append(self.model.project(hidden_state,with_grad = False))
         # predictions: num_unroll_steps+1, 3, batch, 2*support_size+1 | 2*support_size+1 | 9 (according to the 2nd dim)
-
+        if self.config.representation_consistency :
+            projection_batch.pop()
         ## Compute losses
         value_loss, pc_value_loss, reward_loss, policy_loss = (0, 0, 0, 0)
         value, reward, policy_logits = predictions[0]
@@ -211,6 +227,7 @@ class Trainer:
                 target_reward[:, 0],
                 target_policy[:, 0],
             )
+        
         value_loss += current_value_loss
         policy_loss += current_policy_loss
         pc_value_loss += current_pc_value_loss
@@ -226,6 +243,15 @@ class Trainer:
             numpy.abs(pred_value_scalar - target_value_scalar[:, 0])
             ** self.config.PER_alpha
         )
+        consist_loss = 0
+        if self.config.representation_consistency :
+            projection,projection_target = projection_batch[0],projection_target_batch[0]
+            consist_loss += self.consist_loss_func(projection,projection_target)        
+            for i in range(1, len(projection_batch)) :
+                projection,projection_target = projection_batch[i],projection_target_batch[i]
+                current_consist_loss = self.consist_loss_func(projection,projection_target).sum()
+                consist_loss += current_consist_loss
+
         for i in range(1, len(predictions)):
             value, reward, policy_logits = predictions[i]
             
@@ -257,7 +283,6 @@ class Trainer:
                     target_reward[:, i],
                     target_policy[:, i],
                 )
-
             # Scale gradient by the number of unroll steps (See paper appendix Training)
             current_value_loss.register_hook(
                 lambda grad: grad / gradient_scale_batch[:, i]
@@ -294,7 +319,8 @@ class Trainer:
             )
 
         # Scale the value loss, paper recommends by 0.25 (See paper appendix Reanalyze)
-        loss = value_loss * self.config.value_loss_weight + reward_loss + policy_loss + pc_value_loss * self.config.pc_value_loss_weight
+        loss = value_loss * self.config.value_loss_weight + reward_loss + policy_loss + pc_value_loss * self.config.pc_value_loss_weight \
+            + consist_loss * self.config.consist_loss_weight
         if self.config.PER:
             # Correct PER bias by using importance-sampling (IS) weights
             loss *= weight_batch
@@ -306,7 +332,7 @@ class Trainer:
         loss.backward()
         self.optimizer.step()
         self.training_step += 1
-        if self.config.PC_constraint : 
+        if self.config.PC_constraint and self.config.representation_consistency : 
             return (
                 priorities,
                 # For log purpose
@@ -314,7 +340,30 @@ class Trainer:
                 value_loss.mean().item(),
                 reward_loss.mean().item(),
                 policy_loss.mean().item(),
-                pc_value_loss.mean().item()
+                pc_value_loss.mean().item(),
+                consist_loss.mean().item()
+            )
+        elif self.config.PC_constraint :
+            return (
+                priorities,
+                # For log purpose
+                loss.item(),
+                value_loss.mean().item(),
+                reward_loss.mean().item(),
+                policy_loss.mean().item(),
+                pc_value_loss.mean().item(),
+                0
+            )
+        elif self.config.representation_consistency :
+            return (
+                priorities,
+                # For log purpose
+                loss.item(),
+                value_loss.mean().item(),
+                reward_loss.mean().item(),
+                policy_loss.mean().item(),
+                0,
+                consist_loss.mean().item()
             )
         else :
             return (
@@ -324,6 +373,7 @@ class Trainer:
                 value_loss.mean().item(),
                 reward_loss.mean().item(),
                 policy_loss.mean().item(),
+                0,
                 0
             )
 
@@ -372,3 +422,12 @@ class Trainer:
             1
         )
         return value_loss,pc_value_loss, reward_loss, policy_loss
+    
+    @staticmethod
+    def consist_loss_func(f1, f2):
+        """Consistency loss function: similarity loss
+        Parameters
+        """
+        f1 = F.normalize(f1, p=2., dim=-1, eps=1e-5)
+        f2 = F.normalize(f2, p=2., dim=-1, eps=1e-5)
+        return -(f1 * f2).sum(dim=1)

@@ -112,6 +112,7 @@ class MuZero:
             "reward_loss": 0,
             "policy_loss": 0,
             "pc_value_loss": 0,
+            "consist_loss":0,
             "num_played_games": 0,
             "num_played_steps": 0,
             "num_reanalysed_games": 0,
@@ -265,6 +266,8 @@ class MuZero:
             "lr",
             "total_loss",
             "value_loss",
+            "pc_value_loss",
+            "consist_loss",
             "reward_loss",
             "policy_loss",
             "num_played_games",
@@ -330,6 +333,8 @@ class MuZero:
                     "3.Loss/1.Total_weighted_loss", info["total_loss"], counter
                 )
                 writer.add_scalar("3.Loss/Value_loss", info["value_loss"], counter)
+                writer.add_scalar("3.Loss/PC_value_loss", info["pc_value_loss"], counter)
+                writer.add_scalar("3.Loss/consist_loss", info["consist_loss"], counter)
                 writer.add_scalar("3.Loss/Reward_loss", info["reward_loss"], counter)
                 writer.add_scalar("3.Loss/Policy_loss", info["policy_loss"], counter)
                 if episode != info["total_episode"] :
