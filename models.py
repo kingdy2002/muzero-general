@@ -440,13 +440,7 @@ class PredictionNetwork(torch.nn.Module):
             fc_policy_layers,
             action_space_size,
         )
-        support_size  = full_support_size // 2
-        
-        (torch.tensor([x for x in range(-support_size, support_size + 1)])
-        .expand(value.shape)
-        .float()
-        .to(device=value.device))
-        
+
     def forward(self, x):
         for block in self.resblocks:
             x = block(x)
@@ -455,7 +449,6 @@ class PredictionNetwork(torch.nn.Module):
         value = value.view(-1, self.block_output_size_value)
         policy = policy.view(-1, self.block_output_size_policy)
         value = self.fc_value(value)
-        value = torch.softmax(value, dim=1)
         policy = self.fc_policy(policy)
         return policy, value
 
@@ -549,8 +542,7 @@ class MuZeroResidualNetwork(AbstractNetwork):
         self.projection_network = torch.nn.DataParallel(
             ProjectionNetwork(
             observation_shape=observation_shape,
-            num_channels=num_channels,
-            downsample=downsample
+            num_channels=num_channels
             )
         )
 
@@ -659,38 +651,7 @@ class MuZeroResidualNetwork(AbstractNetwork):
 
     def project(self,hidden_state, with_grad) :
         return self.projection_network.module.project(hidden_state,with_grad)
-    """
-    def target_distribution(self, target_p , rewards , dones) :
-        discount_rate = self.config.discount
-        batch_size = self.config.hyperparameters['batch_size']
-        
-        d_z = ((self.Vmax - self.Vmin)/(self.atoms - 1))
-        support = torch.linspace(self.Vmin,self.Vmax,self.atoms).to(self.device)
-        target_Q = target_p * support
-        action = target_Q.sum(2).max(1)[1]
-
-        action = action.unsqueeze(1).unsqueeze(1).expand(-1,1,self.atoms)
-
-        target_dis = target_p.gather(1,action).squeeze(1)
-        rewards = rewards.unsqueeze(1).expand_as(target_dis)
-        dones = dones.unsqueeze(1).expand_as(target_dis)
-        support = support.unsqueeze(0).expand_as(target_dis)
-        
-
-        Tz = rewards + (1 - dones) * self.hyperparameters["discount_rate"] * support
-        Tz = Tz.clamp(min=self.Vmin, max=self.Vmax)
-        b  = (Tz - self.Vmin) / d_z
-        l  = b.floor().long()
-        u  = b.ceil().long()
-        offset = torch.linspace(0, (batch_size - 1) * self.atoms, batch_size).long().unsqueeze(1).expand(batch_size, self.atoms).to(self.device)
-        proj_dis = torch.zeros(target_dis.size()).to(self.device)
-        
-        proj_dis.view(-1).index_add_(0, (l + offset).view(-1), (target_dis * (u.float() - b)).view(-1))
-        proj_dis.view(-1).index_add_(0, (u + offset).view(-1), (target_dis * (b - l.float())).view(-1))
-        
-
-        return proj_dis
-    """
+    
 ########### End ResNet ###########
 ##################################
 
@@ -700,7 +661,6 @@ class ProjectionNetwork(torch.nn.Module):
         self,
         observation_shape,
         num_channels,
-        downsample,
         proj_hid = 256,
         proj_out=256,
         pred_hid=64
@@ -710,14 +670,7 @@ class ProjectionNetwork(torch.nn.Module):
         self.proj_out = proj_out
         self.pred_hid = pred_hid
         self.pred_out=proj_out
-        self.downsample = downsample
-        in_dim = 0
-        if self.downsample :
-            in_dim = num_channels * math.ceil(observation_shape[1] / 16) * math.ceil(observation_shape[2] / 16)
-        else :
-            in_dim = num_channels * observation_shape[1] * observation_shape[2]
-        
-        
+        in_dim = num_channels * math.ceil(observation_shape[1] / 16) * math.ceil(observation_shape[2] / 16)
         self.porjection_in_dim = in_dim
         self.projection = torch.nn.Sequential(
             torch.nn.Linear(self.porjection_in_dim, self.proj_hid),

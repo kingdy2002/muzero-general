@@ -143,10 +143,7 @@ class Trainer:
         ) = batch
 
         # Keep values as scalars for calculating the priorities for the prioritized replay
-        total_support_size = self.config.support_size * 2 + 1
-        support = numpy.array(i / total_support_size for i in range(total_support_size))
-        target_value_scalar = target_value * support
-        target_value_scalar = numpy.sum(target_value_scalar,axis=-1)
+        target_value_scalar = numpy.array(target_value, dtype="float32")
         priorities = numpy.zeros_like(target_value_scalar)
 
         device = next(self.model.parameters()).device
@@ -169,6 +166,7 @@ class Trainer:
         # target_policy: batch, num_unroll_steps+1, len(action_space)
         # gradient_scale_batch: batch, num_unroll_steps+1
 
+        target_value = models.scalar_to_support(target_value, self.config.support_size)
         target_reward = models.scalar_to_support(
             target_reward, self.config.support_size
         )
@@ -186,6 +184,7 @@ class Trainer:
             observation_batch
         )
         predictions = [(value, reward, policy_logits)]
+
         #make representation self-supervised batch
         if self.config.representation_consistency :
             projection_batch.append( self.model.project(hidden_state,with_grad = True))

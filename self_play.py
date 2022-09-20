@@ -296,7 +296,7 @@ class MCTS:
             root = override_root_with
             root_predicted_value = None
         else:
-            root = Node(0,self.config.support_size)
+            root = Node(0)
             observation = (
                 torch.tensor(observation)
                 .float()
@@ -309,7 +309,9 @@ class MCTS:
                 policy_logits,
                 hidden_state,
             ) = model.initial_inference(observation)
-            root_predicted_value = numpy.array(root_predicted_value.item().squeeze(dim = 0))
+            root_predicted_value = models.support_to_scalar(
+                root_predicted_value, self.config.support_size
+            ).item()
             reward = models.support_to_scalar(reward, self.config.support_size).item()
             assert (
                 legal_actions
@@ -359,7 +361,7 @@ class MCTS:
                 parent.hidden_state,
                 torch.tensor([[action]]).to(parent.hidden_state.device),
             )
-            value = numpy.array(value.item().squeeze(dim = 0))
+            value = models.support_to_scalar(value, self.config.support_size).item()
             reward = models.support_to_scalar(reward, self.config.support_size).item()
             node.expand(
                 self.config.action_space,
@@ -422,7 +424,7 @@ class MCTS:
             value_score = min_max_stats.normalize(
                 child.reward
                 + self.config.discount
-                * (self.cal_value_for_ucb_score(child.value()) if len(self.config.players) == 1 else -cal_value_for_ucb_score(child.value()))
+                * (child.value() if len(self.config.players) == 1 else -child.value())
             )
         else:
             value_score = 0
@@ -438,7 +440,7 @@ class MCTS:
             for node in reversed(search_path):
                 node.value_sum += value
                 node.visit_count += 1
-                min_max_stats.update(node.reward + self.cal_value_for_ucb_score(self.config.discount * node.value()))
+                min_max_stats.update(node.reward + self.config.discount * node.value())
 
                 value = node.reward + self.config.discount * value
 
@@ -446,7 +448,7 @@ class MCTS:
             for node in reversed(search_path):
                 node.value_sum += value if node.to_play == to_play else -value
                 node.visit_count += 1
-                min_max_stats.update(node.reward + self.cal_value_for_ucb_score(self.config.discount * -node.value()))
+                min_max_stats.update(node.reward + self.config.discount * -node.value())
 
                 value = (
                     -node.reward if node.to_play == to_play else node.reward
@@ -466,24 +468,12 @@ class MCTS:
             search_action_process.append(action)
         return search_action_process
     
-    def cal_value_for_ucb_score(self, value , cut = self.config.cut_ratio) :
-        support_size = self.config.support_size
-        support = [i / support_size in range(-support_size , support_size+1)]
-        sum_p = 0
-        value = 0
-        for i, p in enumerate(reversed(value)) :
-            value += support[-i] * p
-            sum_p += p
-            if sum_p > sut :
-                break
-        return value
-        
 class Node:
-    def __init__(self, prior , support_size):
+    def __init__(self, prior):
         self.visit_count = 0
         self.to_play = -1
         self.prior = prior
-        self.value_sum = numpy.zeros(support_size*2 + 1)
+        self.value_sum = 0
         self.children = {}
         self.hidden_state = None
         self.reward = 0
@@ -494,7 +484,7 @@ class Node:
 
     def value(self):
         if self.visit_count == 0:
-            return self.value_sum
+            return 0
         return self.value_sum / self.visit_count
 
     def expand(self, actions, to_play, reward, policy_logits, hidden_state , cal_value):
@@ -512,7 +502,7 @@ class Node:
         ).tolist()
         policy = {a: policy_values[i] for i, a in enumerate(actions)}
         for action, p in policy.items():
-            self.children[action] = Node(p,self.config.support_size)
+            self.children[action] = Node(p)
 
     def add_exploration_noise(self, dirichlet_alpha, exploration_fraction):
         """

@@ -267,7 +267,7 @@ class ReplayBuffer:
                 root_values[bootstrap_index]
                 if game_history.to_play_history[bootstrap_index]
                 == game_history.to_play_history[index]
-                else numpy.flip(root_values[bootstrap_index],axis = -1)
+                else -root_values[bootstrap_index]
             )
 
             value = last_step_value * self.config.discount**self.config.td_steps
@@ -279,24 +279,14 @@ class ReplayBuffer:
         ):
             # The value is oriented from the perspective of the current player
             value += (
-                self.reward_to_vector(reward)
+                reward
                 if game_history.to_play_history[index]
                 == game_history.to_play_history[index + i]
-                else self.reward_to_vector(-reward)
+                else -reward
             ) * self.config.discount**i
 
         return value
-    
-    def reward_to_vector(self, reward) :
-        
-        result = numpy.zeros(self.config.support_size * 2 + 1)
-        if reward == 1 :
-            result[-1] = 1
-        elif reward == -1 :
-            result[0] = 1
-        
-        return result
-        
+
     def make_target(self, game_history, state_index):
         """
         Generate targets for every unroll steps.
@@ -378,7 +368,7 @@ class ReplayBuffer:
             if (state_index + self.config.num_unroll_steps) >= len(game_history.heuristic_path_action) :
                 end = len(game_history.heuristic_path_action)
             else :
-                end = state_index + self.config.num_unroll_steps
+                end = state_index + self.config.num_unroll_step
             end = min(state_index + self.config.num_unroll_steps,len(game_history.heuristic_path_action) - 1)
             indexs = list(range(state_index, end))
             index_batchs.append(indexs)
