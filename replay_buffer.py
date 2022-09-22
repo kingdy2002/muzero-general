@@ -388,7 +388,7 @@ class ReplayBuffer:
                     len(self.config.action_space),
                 )
             )
-            action_batch.append(game_history.heuristic_path_action[game_pos+1])  
+            action_batch.append(game_history.heuristic_path_action[game_pos+1[0]])  
 
         return observation_batch, action_batch
 
@@ -452,6 +452,81 @@ class ReplayBuffer:
                 lis.append(historical_path)
             historical_batch.append(lis)
         return historical_batch
+    
+    def get_reused_path_batch(self) :
+        (
+            index_batch,
+            observation_batch,
+            action_batch,
+            reward_batch,
+            target_observation_batch
+
+        ) = ([], [], [], [], [])
+        weight_batch = [] if self.config.PER else None
+        for game_id, game_history, game_prob in self.sample_n_games(
+            self.config.batch_size * self.config.reused_ratio
+        ):
+            game_pos, pos_prob = self.sample_position(game_history)
+            observations ,actions, rewards, target_observation = self.make_reused_target(
+                game_history, game_pos
+            )
+            
+
+            index_batch.extend([game_id, game_pos])
+            action_batch.extend(actions)
+            observation_batch.extend(observations)
+            reward_batch.extend(rewards)
+            target_observation_batch.extend(target_observation)
+            if self.config.PER:
+                for i in range(len(actions)) :
+                    weight_batch.append(1 / (self.total_samples * game_prob * pos_prob))
+
+        if self.config.PER:
+            weight_batch = numpy.array(weight_batch, dtype="float32") / max(
+                weight_batch
+            )
+        return (
+            index_batch,
+            (
+                observation_batch,
+                action_batch,
+                reward_batch,
+                target_observation_batch,
+                weight_batch
+            ),
+        )    
+        
+    def make_reused_target(self, game_history, state_index):
+        """
+        Generate targets for every unroll steps.
+        """
+        observations , actions , rewards, target_observation  = [], [], [], []
+        heuristic_path_actions = self.game_history.heuristic_path_action[state_index]
+        heuristic_real_rollout_paths = self.game_history.heuristic_real_rollout_path[state_index]
+        for i , heuristic_path_action,heuristic_real_rollout_path in enumerate(zip(heuristic_path_actions,heuristic_real_rollout_paths)) :
+            pre_obs = game_history.get_stacked_observations_heuristic(
+                    state_index,
+                    self.config.stacked_observations,
+                    len(self.config.action_space),
+                    i,
+                    0
+                )
+            for pos, obs in enumerate(heuristic_real_rollout_path[1:]) :
+                pos_obs = game_history.get_stacked_observations_heuristic(
+                    state_index,
+                    self.config.stacked_observations,
+                    len(self.config.action_space),
+                    i,
+                    pos+1
+                )
+                observations.append(pre_obs)
+                target_observation.append(pos_obs)
+                rewards.append(obs[1])
+                actions.append(heuristic_path_action[pos])
+                pre_obs = pos_obs
+                
+                
+        return observations ,actions, rewards, target_observation
 """
     def make_PC_value(self,game_history, indexs) :
         l = self.config.historic_len

@@ -65,12 +65,15 @@ class Trainer:
             time.sleep(0.1)
 
         next_batch = replay_buffer.get_batch.remote()
+        next_reused_batch = replay_buffer.get_reused_path_batch.remote()
         # Training loop
         while self.training_step < self.config.training_steps and not ray.get(
             shared_storage.get_info.remote("terminate")
         ):
             index_batch, batch = ray.get(next_batch)
+            reused_index_batch,reused_batch = ray.get(next_reused_batch)
             next_batch = replay_buffer.get_batch.remote()
+            next_reused_batch = replay_buffer.get_reused_path_batch.remote()
             self.update_lr()
             (
                 priorities,
@@ -79,8 +82,11 @@ class Trainer:
                 reward_loss,
                 policy_loss,
                 pc_value_loss,
-                consist_loss
-            ) = self.update_weights(batch)
+                consist_loss,
+                reused_loss,
+                reused_reward_loss,
+                reused_hidden_loss
+            ) = self.update_weights(batch,reused_batch=reused_batch)
 
             if self.config.PER:
                 # Save new priorities in the replay buffer (See https://arxiv.org/abs/1803.00933)
@@ -107,7 +113,9 @@ class Trainer:
                     "reward_loss": reward_loss,
                     "policy_loss": policy_loss,
                     "pc_value_loss":pc_value_loss,
-                    "consist_loss":consist_loss
+                    "consist_loss":consist_loss,
+                    'reused_reward_loss' : reused_reward_loss,
+                    'reused_hidden_loss' : reused_hidden_loss
                 }
             )
 
@@ -126,7 +134,7 @@ class Trainer:
                 ):
                     time.sleep(0.5)
 
-    def update_weights(self, batch):
+    def update_weights(self, batch , reused_batch = None):
         """
         Perform one training step.
         """
@@ -141,7 +149,10 @@ class Trainer:
             gradient_scale_batch,
             pc_value_batch
         ) = batch
-
+        reused_loss = 0
+        if reused_batch :
+            reused_reward_loss, reused_hidden_loss = self.cal_reused_loss(reused_batch)
+            
         # Keep values as scalars for calculating the priorities for the prioritized replay
         target_value_scalar = numpy.array(target_value, dtype="float32")
         priorities = numpy.zeros_like(target_value_scalar)
@@ -324,13 +335,18 @@ class Trainer:
             # Correct PER bias by using importance-sampling (IS) weights
             loss *= weight_batch
         # Mean over batch dimension (pseudocode do a sum)
-        loss = loss.mean()
+        loss = loss.mean() + reused_reward_loss + reused_hidden_loss
 
         # Optimize
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
         self.training_step += 1
+        
+        if reused_batch :
+            reused_reward_loss = reused_reward_loss.item()
+            reused_hidden_loss = reused_hidden_loss.item()
+        
         if self.config.PC_constraint and self.config.representation_consistency : 
             return (
                 priorities,
@@ -340,7 +356,9 @@ class Trainer:
                 reward_loss.mean().item(),
                 policy_loss.mean().item(),
                 pc_value_loss.mean().item(),
-                consist_loss.mean().item()
+                consist_loss.mean().item(),
+                reused_reward_loss,
+                reused_hidden_loss
             )
         elif self.config.PC_constraint :
             return (
@@ -351,7 +369,9 @@ class Trainer:
                 reward_loss.mean().item(),
                 policy_loss.mean().item(),
                 pc_value_loss.mean().item(),
-                0
+                0,
+                reused_reward_loss,
+                reused_hidden_loss
             )
         elif self.config.representation_consistency :
             return (
@@ -363,6 +383,9 @@ class Trainer:
                 policy_loss.mean().item(),
                 0,
                 consist_loss.mean().item()
+                ,
+                reused_reward_loss,
+                reused_hidden_loss
             )
         else :
             return (
@@ -373,7 +396,9 @@ class Trainer:
                 reward_loss.mean().item(),
                 policy_loss.mean().item(),
                 0,
-                0
+                0,
+                reused_reward_loss,
+                reused_hidden_loss
             )
 
     def update_lr(self):
@@ -386,6 +411,36 @@ class Trainer:
         for param_group in self.optimizer.param_groups:
             param_group["lr"] = lr
 
+    def cal_reused_loss(self,batch) :
+        (   
+            observation_batch,
+            action_batch,
+            reward_batch,
+            target_observation_batch,
+            weight_batch
+        ) = batch
+        if self.config.PER:
+            weight_batch = torch.tensor(weight_batch.copy()).float().to(device)
+        action_batch = torch.tensor(action_batch).long().to(device).unsqueeze(-1)
+        reward_batch = torch.tensor(reward_batch).float().to(device)
+        observation_batch = (
+            torch.tensor(numpy.array(observation_batch)).float().to(device)
+        )
+        target_observation_batch = (
+            torch.tensor(numpy.array(target_observation_batch)).float().to(device)
+        )
+        _, reward, policy_logits, hidden_state = self.model.initial_inference(
+            observation_batch
+        )
+        _, reward, policy_logits, hidden_state_target = self.model.initial_inference(
+            target_observation_batch
+        )
+        _, reward, policy_logits, hidden_state = self.model.recurrent_inference(
+                hidden_state, action_batch
+        )
+        loss = self.reused_loss_function(reward,hidden_state,reward_batch,hidden_state_target.detach(),weight_batch)
+        return loss
+    
     @staticmethod
     def loss_function(
         value,
@@ -421,7 +476,25 @@ class Trainer:
             1
         )
         return value_loss,pc_value_loss, reward_loss, policy_loss
-    
+
+    @staticmethod
+    def reused_loss_function(
+        reward,
+        hidden,
+        target_reward,
+        target_hidden,
+        weight_batch
+        
+    ):  
+        hidden = hidden.view(target_reward.shape[0],-1)
+        hidden_size = hidden.shape[1]
+        target_hidden = target_hidden.view(target_reward.shape[0],-1)
+        # Cross-entropy seems to have a better convergence than MSE
+        value_loss = ((-target_value * torch.nn.LogSoftmax(dim=1)(value)) * weight_batch).mean()
+        hidden_loss = ((-target_hidden * torch.nn.LogSoftmax(dim=1)(hidden)) * weight_batch).mean()
+        hidden_loss = hidden_loss/ torch.sqrt(hidden_size)
+        return reward_loss * self.config.reused_reward_loss_weight, hidden_loss * self.config.hidden_loss_weight
+
     @staticmethod
     def consist_loss_func(f1, f2):
         """Consistency loss function: similarity loss

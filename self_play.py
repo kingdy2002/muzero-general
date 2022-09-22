@@ -123,7 +123,9 @@ class SelfPlay:
         game_history.to_play_history.append(self.game.to_play())
         game_history.legal_actions_history.append(self.game.legal_actions())
         game_history.heuristic_path_action.append([])
+        game_history.heuristic_real_rollout_path.append([])
         done = False
+        reward = 0
 
         if render:
             self.game.render()
@@ -164,17 +166,20 @@ class SelfPlay:
                         print(
                             f"Root value for player {self.game.to_play()}: {root.value():.2f}"
                         )
-                    game_history.heuristic_path_action.append(mcts_info['action_process'])
                     action_processes = mcts_info['action_processes']
+                    game_history.heuristic_path_action.append(action_processes)
                     real_rollout_paths = []
+                    real_rollout_paths.append((observation, reward, done))
                     for action_process in action_processes :
                         real_rollout_path = self.rollout_by_action_process(action_process, self.game)
                         real_rollout_paths.append(real_rollout_path)
+                    game_history.heuristic_real_rollout_path.append(real_rollout_paths)
                 else:
                     action, root = self.select_opponent_action(
                         opponent, stacked_observations
                     )
                     game_history.heuristic_path_action.append([])
+                    game_history.heuristic_real_rollout_path.append([])
 
                 observation, reward, done = self.game.step(action)
 
@@ -259,8 +264,8 @@ class SelfPlay:
         env = copy.deepcopy(env)
         real_rollout_path = []
         for action in action_process :
-            observation, reward, done = env.step(action)
-            real_rollout_path.append(observation)
+            env_result = env.step(action)
+            real_rollout_path.append(env_result)
             if done : 
                 break
         return real_rollout_path
@@ -537,6 +542,7 @@ class GameHistory:
         self.heuristic_path_value_sum = []
         self.heuristic_path_value_count = []
         self.heuristic_path_action = []
+        self.heuristic_real_rollout_path = []
 
     def store_search_statistics(self, root, action_space):
         # Turn visit count from root into a policy
@@ -594,7 +600,58 @@ class GameHistory:
 
         return stacked_observations
 
+    def get_stacked_observations_heuristic(
+        self, index, num_stacked_observations, action_space_size, heuristic_num,heuristic_pos
+    ):
+        index = index % len(self.observation_history)
+        heuristic_path = self.heuristic_real_rollout_path[index][heuristic_num].copy()
+        stacked_observations = heuristic_path[heuristic_pos][0]
+        real_stacked = num_stacked_observations - heuristic_pos
 
+        for past_observation_index in range(heuristic_pos-1,heuristic_pos-num_stacked_observations-1,-1):
+            if past_observation_index < 0 :
+                break
+
+            previous_observation = numpy.concatenate(
+                (
+                    self.heuristic_path[past_observation_index][0],
+                    [
+                        numpy.ones_like(stacked_observations[0])
+                        * self.heuristic_path_action[index][heuristic_num][past_observation_index]
+                        / action_space_size
+                    ],
+                )
+            )
+            stacked_observations = numpy.concatenate(
+                    (stacked_observations, previous_observation)
+            )        
+        
+        if real_stacked > 0 :
+            for past_observation_index in range(index,index-real_stacked,-1):
+                if 0 <= past_observation_index:
+                    previous_observation = numpy.concatenate(
+                        (
+                            self.observation_history[past_observation_index],
+                            [
+                                numpy.ones_like(stacked_observations[0])
+                                * self.action_history[past_observation_index + 1]
+                                / action_space_size
+                            ],
+                        )
+                    )
+                else:
+                    previous_observation = numpy.concatenate(
+                        (
+                            numpy.zeros_like(self.observation_history[index]),
+                            [numpy.zeros_like(stacked_observations[0])],
+                        )
+                    )
+
+                stacked_observations = numpy.concatenate(
+                    (stacked_observations, previous_observation)
+                )
+
+        return stacked_observations        
 class MinMaxStats:
     """
     A class that holds the min-max values of the tree.

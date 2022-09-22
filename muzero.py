@@ -117,7 +117,9 @@ class MuZero:
             "num_played_steps": 0,
             "num_reanalysed_games": 0,
             "terminate": False,
-            "total_episode":0
+            "total_episode":0,
+            'reused_reward_loss' : 0,
+            'reused_hidden_loss' : 0
         }
         self.replay_buffer = {}
 
@@ -273,6 +275,8 @@ class MuZero:
             "num_played_games",
             "num_played_steps",
             "num_reanalysed_games",
+            'reused_reward_loss',
+            'reused_hidden_loss'
         ]
         info = ray.get(self.shared_storage_worker.get_info.remote(keys))
         last_win = deque(maxlen=20)
@@ -337,6 +341,8 @@ class MuZero:
                 writer.add_scalar("3.Loss/consist_loss", info["consist_loss"], counter)
                 writer.add_scalar("3.Loss/Reward_loss", info["reward_loss"], counter)
                 writer.add_scalar("3.Loss/Policy_loss", info["policy_loss"], counter)
+                writer.add_scalar("3.Loss/Reused_reward_loss", info["reused_reward_loss"], counter)
+                writer.add_scalar("3.Loss/Reused_hidden_loss", info["reused_hidden_loss"], counter)
                 if episode != info["total_episode"] :
                     episode = info["total_episode"]
                     last_win.append(1 if info["muzero_reward"] == 10 else 0)
