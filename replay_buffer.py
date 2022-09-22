@@ -368,7 +368,7 @@ class ReplayBuffer:
             if (state_index + self.config.num_unroll_steps) >= len(game_history.heuristic_path_action) :
                 end = len(game_history.heuristic_path_action)
             else :
-                end = state_index + self.config.num_unroll_step
+                end = state_index + self.config.num_unroll_steps
             end = min(state_index + self.config.num_unroll_steps,len(game_history.heuristic_path_action) - 1)
             indexs = list(range(state_index, end))
             index_batchs.append(indexs)

@@ -125,8 +125,6 @@ class MuZeroConfig:
         #reuse MCT
         self.num_branch = 5
         
-        #distribution
-        self.cut_ratio = 0.5
 
     def visit_softmax_temperature_fn(self, trained_steps):
         """
