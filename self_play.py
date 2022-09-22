@@ -30,6 +30,8 @@ class SelfPlay:
 
     def continuous_self_play(self, shared_storage, replay_buffer, test_mode=False):
         total_episode = 0
+        support_size = self.config.support_size
+        support = numpy.array([i / support_size for i in range(-support_size,support_size+1)])
         while ray.get(
             shared_storage.get_info.remote("training_step")
         ) < self.config.training_steps and not ray.get(
@@ -63,12 +65,18 @@ class SelfPlay:
                 )
                 total_episode += 1
                 # Save to the shared storage
+                for value in game_history.root_values :
+                    print()
+                    print(value)
+                    print(support)
+                    print()
+                    
                 shared_storage.set_info.remote(
                     {
                         "episode_length": len(game_history.action_history) - 1,
                         "total_reward": sum(game_history.reward_history),
                         "mean_value": numpy.mean(
-                            [value for value in game_history.root_values if value]
+                            [(value * support).sum() for value in game_history.root_values if value]
                         ),
                         "total_episode": total_episode,
                     }
@@ -183,7 +191,6 @@ class SelfPlay:
                     self.game.render()
 
                 game_history.store_search_statistics(root, self.config.action_space)
-
                 # Next batch
                 game_history.action_history.append(action)
                 game_history.observation_history.append(observation)
@@ -309,7 +316,7 @@ class MCTS:
                 policy_logits,
                 hidden_state,
             ) = model.initial_inference(observation)
-            root_predicted_value = numpy.array(root_predicted_value.item().squeeze(dim = 0))
+            root_predicted_value = root_predicted_value.squeeze(dim = 0).cpu().numpy()
             reward = models.support_to_scalar(reward, self.config.support_size).item()
             assert (
                 legal_actions
@@ -359,7 +366,7 @@ class MCTS:
                 parent.hidden_state,
                 torch.tensor([[action]]).to(parent.hidden_state.device),
             )
-            value = numpy.array(value.item().squeeze(dim = 0))
+            value = value.squeeze(dim = 0).cpu().numpy()
             reward = models.support_to_scalar(reward, self.config.support_size).item()
             node.expand(
                 self.config.action_space,
@@ -422,7 +429,7 @@ class MCTS:
             value_score = min_max_stats.normalize(
                 child.reward
                 + self.config.discount
-                * (self.cal_value_for_ucb_score(child.value()) if len(self.config.players) == 1 else -cal_value_for_ucb_score(child.value()))
+                * (self.cal_value_for_ucb_score(child.value()) if len(self.config.players) == 1 else -self.cal_value_for_ucb_score(child.value()))
             )
         else:
             value_score = 0
@@ -466,17 +473,18 @@ class MCTS:
             search_action_process.append(action)
         return search_action_process
     
-    def cal_value_for_ucb_score(self, value , cut = self.config.cut_ratio) :
+    def cal_value_for_ucb_score(self, value) :
+        cut = self.config.cut_ratio
         support_size = self.config.support_size
-        support = [i / support_size in range(-support_size , support_size+1)]
+        support = [i / support_size for i in range(-support_size , support_size+1)]
         sum_p = 0
-        value = 0
+        result = 0
         for i, p in enumerate(reversed(value)) :
-            value += support[-i] * p
+            result += support[-i] * p
             sum_p += p
-            if sum_p > sut :
+            if sum_p > cut :
                 break
-        return value
+        return result
         
 class Node:
     def __init__(self, prior , support_size):
@@ -488,6 +496,7 @@ class Node:
         self.hidden_state = None
         self.reward = 0
         self.cal_value = 0
+        self.support_size = support_size
 
     def expanded(self):
         return len(self.children) > 0
@@ -512,7 +521,7 @@ class Node:
         ).tolist()
         policy = {a: policy_values[i] for i, a in enumerate(actions)}
         for action, p in policy.items():
-            self.children[action] = Node(p,self.config.support_size)
+            self.children[action] = Node(p,self.support_size)
 
     def add_exploration_noise(self, dirichlet_alpha, exploration_fraction):
         """

@@ -440,12 +440,7 @@ class PredictionNetwork(torch.nn.Module):
             fc_policy_layers,
             action_space_size,
         )
-        support_size  = full_support_size // 2
         
-        (torch.tensor([x for x in range(-support_size, support_size + 1)])
-        .expand(value.shape)
-        .float()
-        .to(device=value.device))
         
     def forward(self, x):
         for block in self.resblocks:
@@ -455,7 +450,7 @@ class PredictionNetwork(torch.nn.Module):
         value = value.view(-1, self.block_output_size_value)
         policy = policy.view(-1, self.block_output_size_policy)
         value = self.fc_value(value)
-        value = torch.softmax(value, dim=1)
+        value = torch.softmax(value, dim=-1)
         policy = self.fc_policy(policy)
         return policy, value
 

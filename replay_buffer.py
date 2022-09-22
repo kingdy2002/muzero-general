@@ -38,6 +38,9 @@ class ReplayBuffer:
         self.model.eval()
 
     def save_game(self, game_history, shared_storage=None):
+        support_size = self.config.support_size
+        support = numpy.array([i / support_size for i in range(-support_size , support_size+ 1)])
+        
         if self.config.PER:
             if game_history.priorities is not None:
                 # Avoid read only array when loading replay buffer from disk
@@ -46,9 +49,10 @@ class ReplayBuffer:
                 # Initial priorities for the prioritized replay (See paper appendix Training)
                 priorities = []
                 for i, root_value in enumerate(game_history.root_values):
+                    root_value = (root_value * support).sum(-1)
                     priority = (
                         numpy.abs(
-                            root_value - self.compute_target_value(game_history, i)
+                            root_value - (self.compute_target_value(game_history, i)*support).sum(-1)
                         )
                         ** self.config.PER_alpha
                     )
@@ -301,18 +305,19 @@ class ReplayBuffer:
         """
         Generate targets for every unroll steps.
         """
+        total_support_size = self.config.support_size * 2 + 1
         target_values, target_rewards, target_policies, actions  = [], [], [], []
         for current_index in range(
             state_index, state_index + self.config.num_unroll_steps + 1
         ):
             value = self.compute_target_value(game_history, current_index)
             if current_index < len(game_history.root_values):
-                target_values.append(value)
+                target_values.append(value.tolist())
                 target_rewards.append(game_history.reward_history[current_index])
                 target_policies.append(game_history.child_visits[current_index])
                 actions.append(game_history.action_history[current_index])
             elif current_index == len(game_history.root_values):
-                target_values.append(0)
+                target_values.append([1 / total_support_size for i in range(total_support_size)])
                 target_rewards.append(game_history.reward_history[current_index])
                 # Uniform policy
                 target_policies.append(
@@ -324,7 +329,7 @@ class ReplayBuffer:
                 actions.append(game_history.action_history[current_index])
             else:
                 # States past the end of games are treated as absorbing states
-                target_values.append(0)
+                target_values.append([1 / total_support_size for i in range(total_support_size)])
                 target_rewards.append(0)
                 # Uniform policy
                 target_policies.append(
@@ -335,7 +340,7 @@ class ReplayBuffer:
                 )
                 actions.append(numpy.random.choice(self.config.action_space))
 
-        return target_values, target_rewards, target_policies, actions 
+        return numpy.array(target_values), target_rewards, target_policies, actions 
 
     def get_pc_value_batch(self,game_historys,list_game_pos) :
         observation_batchs , action_batchs , index_batchs = self.get_pre_batch_for_pc_value_batch(game_historys,list_game_pos)

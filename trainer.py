@@ -143,8 +143,8 @@ class Trainer:
         ) = batch
 
         # Keep values as scalars for calculating the priorities for the prioritized replay
-        total_support_size = self.config.support_size * 2 + 1
-        support = numpy.array(i / total_support_size for i in range(total_support_size))
+        total_support= self.config.support_size
+        support = numpy.array([[i / total_support for i in range(-total_support,total_support+1)]])
         target_value_scalar = target_value * support
         target_value_scalar = numpy.sum(target_value_scalar,axis=-1)
         priorities = numpy.zeros_like(target_value_scalar)
