@@ -435,20 +435,19 @@ class Trainer:
             reward_batch, self.config.support_size
         )
         reward_loss, hidden_loss = 0,0
-        for i in range(action_batch.shape[0]) :
-            _, reward, _, hidden_state = self.model.recurrent_inference(
-                    self.model.initial_inference(observation_batch[i])[3], action_batch[i]
+        _, reward, _, hidden_state = self.model.recurrent_inference(
+                self.model.initial_inference(observation_batch)[3], action_batch
+        )
+        with torch.no_grad() :
+            _, _, _, hidden_state_target = self.model.initial_inference(
+                target_observation_batch
             )
-            with torch.no_grad() :
-                _, _, _, hidden_state_target = self.model.initial_inference(
-                    target_observation_batch[i]
-                )
-            curr_loss = self.reused_loss_function(reward,hidden_state,reward_batch[i],hidden_state_target)
-            curr_reward_loss, curr_hidden_loss = curr_loss
-            curr_reward_loss = curr_reward_loss *  self.config.reused_reward_loss_weight
-            curr_hidden_loss = curr_hidden_loss * self.config.hidden_loss_weight
-            reward_loss += curr_reward_loss.mean() * weight_batch[i]
-            hidden_loss += curr_hidden_loss.mean() * weight_batch[i]
+        curr_loss = self.reused_loss_function(reward,hidden_state,reward_batch,hidden_state_target)
+        curr_reward_loss, curr_hidden_loss = curr_loss
+        curr_reward_loss = curr_reward_loss *  self.config.reused_reward_loss_weight
+        curr_hidden_loss = curr_hidden_loss * self.config.hidden_loss_weight
+        reward_loss += curr_reward_loss.mean() * weight_batch
+        hidden_loss += curr_hidden_loss.mean() * weight_batch
         return reward_loss,hidden_loss
     
     @staticmethod

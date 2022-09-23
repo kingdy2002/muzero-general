@@ -473,12 +473,13 @@ class ReplayBuffer:
             
 
             index_batch.append([game_id, game_pos])
-            action_batch.append(actions)
-            observation_batch.append(observations)
-            reward_batch.append(rewards)
-            target_observation_batch.append(target_observation)
+            action_batch.extend(actions)
+            observation_batch.extend(observations)
+            reward_batch.extend(rewards)
+            target_observation_batch.extend(target_observation)
             if self.config.PER:
-                weight_batch.append(1 / (self.total_samples * game_prob * pos_prob))
+                for i in range(len(actions)) :
+                    weight_batch.append(1 / (self.total_samples * game_prob * pos_prob))
 
         if self.config.PER:
             weight_batch = numpy.array(weight_batch, dtype="float32") / max(
