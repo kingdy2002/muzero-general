@@ -169,9 +169,9 @@ class SelfPlay:
                     action_processes = mcts_info['action_processes']
                     game_history.heuristic_path_action.append(action_processes)
                     real_rollout_paths = []
-                    real_rollout_paths.append((observation, reward, done))
                     for action_process in action_processes :
                         real_rollout_path = self.rollout_by_action_process(action_process, self.game)
+                        real_rollout_path.insert(0, (observation, reward, done))
                         real_rollout_paths.append(real_rollout_path)
                     game_history.heuristic_real_rollout_path.append(real_rollout_paths)
                 else:
@@ -266,7 +266,7 @@ class SelfPlay:
         for action in action_process :
             env_result = env.step(action)
             real_rollout_path.append(env_result)
-            if done : 
+            if env_result[2] : 
                 break
         return real_rollout_path
 

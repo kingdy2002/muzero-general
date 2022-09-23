@@ -1,5 +1,6 @@
 import copy
 import time
+import math
 
 import numpy
 import ray
@@ -83,7 +84,6 @@ class Trainer:
                 policy_loss,
                 pc_value_loss,
                 consist_loss,
-                reused_loss,
                 reused_reward_loss,
                 reused_hidden_loss
             ) = self.update_weights(batch,reused_batch=reused_batch)
@@ -150,14 +150,16 @@ class Trainer:
             pc_value_batch
         ) = batch
         reused_loss = 0
-        if reused_batch :
-            reused_reward_loss, reused_hidden_loss = self.cal_reused_loss(reused_batch)
-            
+
         # Keep values as scalars for calculating the priorities for the prioritized replay
         target_value_scalar = numpy.array(target_value, dtype="float32")
         priorities = numpy.zeros_like(target_value_scalar)
 
         device = next(self.model.parameters()).device
+        
+        if reused_batch :
+            reused_reward_loss, reused_hidden_loss = self.cal_reused_loss(reused_batch,device)
+        
         if self.config.PER:
             weight_batch = torch.tensor(weight_batch.copy()).float().to(device)
         observation_batch = (
@@ -411,7 +413,7 @@ class Trainer:
         for param_group in self.optimizer.param_groups:
             param_group["lr"] = lr
 
-    def cal_reused_loss(self,batch) :
+    def cal_reused_loss(self,batch,device) :
         (   
             observation_batch,
             action_batch,
@@ -429,17 +431,25 @@ class Trainer:
         target_observation_batch = (
             torch.tensor(numpy.array(target_observation_batch)).float().to(device)
         )
-        _, reward, policy_logits, hidden_state = self.model.initial_inference(
-            observation_batch
+        reward_batch = models.scalar_to_support(
+            reward_batch, self.config.support_size
         )
-        _, reward, policy_logits, hidden_state_target = self.model.initial_inference(
-            target_observation_batch
-        )
-        _, reward, policy_logits, hidden_state = self.model.recurrent_inference(
-                hidden_state, action_batch
-        )
-        loss = self.reused_loss_function(reward,hidden_state,reward_batch,hidden_state_target.detach(),weight_batch)
-        return loss
+        reward_loss, hidden_loss = 0,0
+        for i in range(action_batch.shape[0]) :
+            _, reward, _, hidden_state = self.model.recurrent_inference(
+                    self.model.initial_inference(observation_batch[i])[3], action_batch[i]
+            )
+            with torch.no_grad() :
+                _, _, _, hidden_state_target = self.model.initial_inference(
+                    target_observation_batch[i]
+                )
+            curr_loss = self.reused_loss_function(reward,hidden_state,reward_batch[i],hidden_state_target)
+            curr_reward_loss, curr_hidden_loss = curr_loss
+            curr_reward_loss = curr_reward_loss *  self.config.reused_reward_loss_weight
+            curr_hidden_loss = curr_hidden_loss * self.config.hidden_loss_weight
+            reward_loss += curr_reward_loss.mean() * weight_batch[i]
+            hidden_loss += curr_hidden_loss.mean() * weight_batch[i]
+        return reward_loss,hidden_loss
     
     @staticmethod
     def loss_function(
@@ -483,17 +493,17 @@ class Trainer:
         hidden,
         target_reward,
         target_hidden,
-        weight_batch
         
     ):  
         hidden = hidden.view(target_reward.shape[0],-1)
-        hidden_size = hidden.shape[1]
+        hidden_size = math.sqrt(hidden.shape[1])
         target_hidden = target_hidden.view(target_reward.shape[0],-1)
         # Cross-entropy seems to have a better convergence than MSE
-        value_loss = ((-target_value * torch.nn.LogSoftmax(dim=1)(value)) * weight_batch).mean()
-        hidden_loss = ((-target_hidden * torch.nn.LogSoftmax(dim=1)(hidden)) * weight_batch).mean()
-        hidden_loss = hidden_loss/ torch.sqrt(hidden_size)
-        return reward_loss * self.config.reused_reward_loss_weight, hidden_loss * self.config.hidden_loss_weight
+        reward_loss = ((-target_reward * torch.nn.LogSoftmax(dim=1)(reward)) ).sum(1)
+        hidden_loss = ((-target_hidden * torch.nn.LogSoftmax(dim=1)(hidden)) ).sum(1)
+        hidden_loss = hidden_loss/ hidden_size
+        
+        return reward_loss, hidden_loss
 
     @staticmethod
     def consist_loss_func(f1, f2):

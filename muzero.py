@@ -148,7 +148,7 @@ class MuZero:
         # Manage GPUs
         if 0 < self.num_gpus:
             num_gpus_per_worker = self.num_gpus / (
-                self.config.train_on_gpu
+                self.config.train_on_gpu * 2
                 + self.config.num_workers * self.config.selfplay_on_gpu
                 + log_in_tensorboard * self.config.selfplay_on_gpu
                 + self.config.use_last_model_value * self.config.reanalyse_on_gpu
@@ -162,7 +162,7 @@ class MuZero:
         # Initialize workers
         self.training_worker = trainer.Trainer.options(
             num_cpus=0,
-            num_gpus=num_gpus_per_worker if self.config.train_on_gpu else 0,
+            num_gpus=num_gpus_per_worker*2 if self.config.train_on_gpu else 0,
         ).remote(self.checkpoint, self.config)
 
         self.shared_storage_worker = shared_storage.SharedStorage.remote(

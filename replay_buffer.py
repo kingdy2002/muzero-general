@@ -464,7 +464,7 @@ class ReplayBuffer:
         ) = ([], [], [], [], [])
         weight_batch = [] if self.config.PER else None
         for game_id, game_history, game_prob in self.sample_n_games(
-            self.config.batch_size * self.config.reused_ratio
+            self.config.batch_size
         ):
             game_pos, pos_prob = self.sample_position(game_history)
             observations ,actions, rewards, target_observation = self.make_reused_target(
@@ -472,14 +472,13 @@ class ReplayBuffer:
             )
             
 
-            index_batch.extend([game_id, game_pos])
-            action_batch.extend(actions)
-            observation_batch.extend(observations)
-            reward_batch.extend(rewards)
-            target_observation_batch.extend(target_observation)
+            index_batch.append([game_id, game_pos])
+            action_batch.append(actions)
+            observation_batch.append(observations)
+            reward_batch.append(rewards)
+            target_observation_batch.append(target_observation)
             if self.config.PER:
-                for i in range(len(actions)) :
-                    weight_batch.append(1 / (self.total_samples * game_prob * pos_prob))
+                weight_batch.append(1 / (self.total_samples * game_prob * pos_prob))
 
         if self.config.PER:
             weight_batch = numpy.array(weight_batch, dtype="float32") / max(
@@ -501,9 +500,9 @@ class ReplayBuffer:
         Generate targets for every unroll steps.
         """
         observations , actions , rewards, target_observation  = [], [], [], []
-        heuristic_path_actions = self.game_history.heuristic_path_action[state_index]
-        heuristic_real_rollout_paths = self.game_history.heuristic_real_rollout_path[state_index]
-        for i , heuristic_path_action,heuristic_real_rollout_path in enumerate(zip(heuristic_path_actions,heuristic_real_rollout_paths)) :
+        heuristic_path_actions = game_history.heuristic_path_action[state_index]
+        heuristic_real_rollout_paths = game_history.heuristic_real_rollout_path[state_index]
+        for i , (heuristic_path_action,heuristic_real_rollout_path) in enumerate(zip(heuristic_path_actions,heuristic_real_rollout_paths)) :
             pre_obs = game_history.get_stacked_observations_heuristic(
                     state_index,
                     self.config.stacked_observations,
@@ -524,7 +523,24 @@ class ReplayBuffer:
                 rewards.append(obs[1])
                 actions.append(heuristic_path_action[pos])
                 pre_obs = pos_obs
-                
+        left = self.config.reused_ratio - len(observations)
+        for i in numpy.random.choice(len(game_history.root_values), left) :
+            observations.append(
+                game_history.get_stacked_observations(
+                    i,
+                    self.config.stacked_observations,
+                    len(self.config.action_space),
+                )
+            )
+            target_observation.append(
+                game_history.get_stacked_observations(
+                    i+1,
+                    self.config.stacked_observations,
+                    len(self.config.action_space),
+                )
+            )
+            actions.append(game_history.action_history[i+1])
+            rewards.append(game_history.reward_history[i])
                 
         return observations ,actions, rewards, target_observation
 """

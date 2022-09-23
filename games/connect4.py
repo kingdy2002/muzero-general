@@ -30,7 +30,7 @@ class MuZeroConfig:
 
 
         ### Self-Play
-        self.num_workers = 9  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.num_workers = 8  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = True
         self.max_moves = 42  # Maximum number of moves if game is not finished before
         self.num_simulations = 200  # Number of future moves self-simulated
@@ -124,10 +124,10 @@ class MuZeroConfig:
         
         #reuse MCT
         self.num_branch = 5
-        self.reused_ratio = 20
+        self.reused_ratio = 42
         self.reused_unroll_step = 5
         self.reused_reward_loss_weight = 1
-        self.hidden_loss_weight = 1
+        self.hidden_loss_weight = 0.1
 
     def visit_softmax_temperature_fn(self, trained_steps):
         """
