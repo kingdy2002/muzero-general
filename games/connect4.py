@@ -124,7 +124,7 @@ class MuZeroConfig:
         
         #reuse MCT
         self.num_branch = 5
-        self.reused_ratio = 42
+        self.reused_ratio = 5
         self.reused_unroll_step = 5
         self.reused_reward_loss_weight = 1
         self.hidden_loss_weight = 0.1
