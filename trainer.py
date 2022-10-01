@@ -337,7 +337,7 @@ class Trainer:
             # Correct PER bias by using importance-sampling (IS) weights
             loss *= weight_batch
         # Mean over batch dimension (pseudocode do a sum)
-        loss = loss.mean() + reused_reward_loss + reused_hidden_loss
+        loss = loss.mean() + reused_reward_loss.mean() + reused_hidden_loss.mean()
 
         # Optimize
         self.optimizer.zero_grad()
@@ -346,8 +346,8 @@ class Trainer:
         self.training_step += 1
         
         if reused_batch :
-            reused_reward_loss = reused_reward_loss.item()
-            reused_hidden_loss = reused_hidden_loss.item()
+            reused_reward_loss = reused_reward_loss.mean().item()
+            reused_hidden_loss = reused_hidden_loss.mean().item()
         
         if self.config.PC_constraint and self.config.representation_consistency : 
             return (
@@ -424,16 +424,18 @@ class Trainer:
         if self.config.PER:
             weight_batch = torch.tensor(weight_batch.copy()).float().to(device)
         action_batch = torch.tensor(action_batch).long().to(device).unsqueeze(-1)
-        reward_batch = torch.tensor(reward_batch).float().to(device)
+        reward_batch = torch.tensor(reward_batch).float().to(device).unsqueeze(-1)
         observation_batch = (
             torch.tensor(numpy.array(observation_batch)).float().to(device)
         )
         target_observation_batch = (
             torch.tensor(numpy.array(target_observation_batch)).float().to(device)
         )
+        
         reward_batch = models.scalar_to_support(
             reward_batch, self.config.support_size
         )
+        reward_batch = reward_batch.squeeze(1)
         reward_loss, hidden_loss = 0,0
         _, reward, _, hidden_state = self.model.recurrent_inference(
                 self.model.initial_inference(observation_batch)[3], action_batch
