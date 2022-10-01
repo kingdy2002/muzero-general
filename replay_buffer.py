@@ -467,6 +467,10 @@ class ReplayBuffer:
             self.config.batch_size
         ):
             game_pos, pos_prob = self.sample_position(game_history)
+            if game_pos == 0 :
+                while game_pos == 0 :
+                    game_pos, pos_prob = self.sample_position(game_history)
+            
             observations ,actions, rewards, target_observation = self.make_reused_target(
                 game_history, game_pos
             )
@@ -524,25 +528,15 @@ class ReplayBuffer:
                 rewards.append(obs[1])
                 actions.append(heuristic_path_action[pos])
                 pre_obs = pos_obs
-        left = self.config.reused_ratio - len(observations)
-        for i in numpy.random.choice(len(game_history.root_values), left) :
-            observations.append(
-                game_history.get_stacked_observations(
-                    i,
-                    self.config.stacked_observations,
-                    len(self.config.action_space),
-                )
-            )
-            target_observation.append(
-                game_history.get_stacked_observations(
-                    i+1,
-                    self.config.stacked_observations,
-                    len(self.config.action_space),
-                )
-            )
-            actions.append(game_history.action_history[i+1])
-            rewards.append(game_history.reward_history[i])
-                
+        
+        choice  = numpy.random.choice(len(observations), self.config.reused_ratio)
+        observations = [observations[i] for i in choice]
+        actions = [actions[i] for i in choice]
+        rewards = [rewards[i] for i in choice]
+        target_observation = [target_observation[i] for i in choice]
+        
+        
+        
         return observations ,actions, rewards, target_observation
 """
     def make_PC_value(self,game_history, indexs) :
