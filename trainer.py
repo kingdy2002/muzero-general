@@ -338,7 +338,6 @@ class Trainer:
             loss *= weight_batch
         # Mean over batch dimension (pseudocode do a sum)
         loss = loss.mean() + reused_reward_loss.mean() + reused_hidden_loss.mean()
-
         # Optimize
         self.optimizer.zero_grad()
         loss.backward()

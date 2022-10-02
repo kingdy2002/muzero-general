@@ -464,7 +464,7 @@ class ReplayBuffer:
         ) = ([], [], [], [], [])
         weight_batch = [] if self.config.PER else None
         for game_id, game_history, game_prob in self.sample_n_games(
-            self.config.batch_size
+            self.config.reuse_batch_size
         ):
             game_pos, pos_prob = self.sample_position(game_history)
             if game_pos == 0 :
