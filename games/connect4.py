@@ -129,7 +129,7 @@ class MuZeroConfig:
         self.reused_reward_loss_weight = 1
         self.hidden_loss_weight = 0.1
         
-        self.reuse_batch_size = self.batch_size * 1
+        self.reuse_batch_size = self.batch_size * 10
 
     def visit_softmax_temperature_fn(self, trained_steps):
         """

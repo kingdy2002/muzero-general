@@ -466,6 +466,8 @@ class ReplayBuffer:
         for game_id, game_history, game_prob in self.sample_n_games(
             self.config.reuse_batch_size
         ):
+            
+            
             game_pos, pos_prob = self.sample_position(game_history)
             if game_pos == 0 :
                 while game_pos == 0 :
@@ -484,6 +486,26 @@ class ReplayBuffer:
             if self.config.PER:
                 for i in range(len(actions)) :
                     weight_batch.append(1 / (self.total_samples * game_prob * pos_prob))
+            """
+            game_pos, pos_prob = self.sample_position(game_history)
+            if game_pos == len(game_history.observation_history) -1 :
+                while game_pos == len(game_history.observation_history) -1 :
+                    game_pos, pos_prob = self.sample_position(game_history)
+
+            observations ,actions, rewards, target_observation = self.make_reused_target_real_path(
+                game_history, game_pos
+            )
+            
+
+            index_batch.append([game_id, game_pos])
+            action_batch.extend(actions)
+            observation_batch.extend(observations)
+            reward_batch.extend(rewards)
+            target_observation_batch.extend(target_observation)
+            if self.config.PER:
+                for i in range(len(actions)) :
+                    weight_batch.append(1 / (self.total_samples * game_prob * pos_prob))
+            """
 
         if self.config.PER:
             weight_batch = numpy.array(weight_batch, dtype="float32") / max(
@@ -537,6 +559,32 @@ class ReplayBuffer:
         
         
         
+        return observations ,actions, rewards, target_observation
+    
+    def make_reused_target_real_path(self, game_history, state_index):
+        """
+        Generate targets for every unroll steps.
+        """
+        observations , actions , rewards, target_observation  = [], [], [], []
+        
+
+        
+        actions.append(game_history.action_history[state_index+1])
+        rewards.append(game_history.reward_history[state_index+1])
+        observations.append(
+                game_history.get_stacked_observations(
+                    state_index,
+                    self.config.stacked_observations,
+                    len(self.config.action_space),
+                )
+        )
+        target_observation.append(
+                game_history.get_stacked_observations(
+                    state_index+1,
+                    self.config.stacked_observations,
+                    len(self.config.action_space),
+                )
+        )
         return observations ,actions, rewards, target_observation
 """
     def make_PC_value(self,game_history, indexs) :
