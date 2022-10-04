@@ -542,7 +542,8 @@ class MuZeroResidualNetwork(AbstractNetwork):
         self.projection_network = torch.nn.DataParallel(
             ProjectionNetwork(
             observation_shape=observation_shape,
-            num_channels=num_channels
+            num_channels=num_channels,
+            downsample = downsample
             )
         )
 
@@ -661,16 +662,21 @@ class ProjectionNetwork(torch.nn.Module):
         self,
         observation_shape,
         num_channels,
+        
         proj_hid = 256,
         proj_out=256,
-        pred_hid=64
+        pred_hid=64,
+        downsample = False
     ):
         super().__init__()
         self.proj_hid = proj_hid
         self.proj_out = proj_out
         self.pred_hid = pred_hid
         self.pred_out=proj_out
-        in_dim = num_channels * math.ceil(observation_shape[1] / 16) * math.ceil(observation_shape[2] / 16)
+        if downsample :
+            in_dim = num_channels * math.ceil(observation_shape[1] / 16) * math.ceil(observation_shape[2] / 16)
+        else :
+            in_dim = num_channels * observation_shape[1] * observation_shape[2]
         self.porjection_in_dim = in_dim
         self.projection = torch.nn.Sequential(
             torch.nn.Linear(self.porjection_in_dim, self.proj_hid),

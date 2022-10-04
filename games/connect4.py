@@ -119,8 +119,11 @@ class MuZeroConfig:
         self.pc_value_loss_weight = 1
         
         #representaion self-supervised constraint
-        self.representation_consistency = False
-        self.consist_loss_weight = 1  /(self.num_unroll_steps - 1) 
+        self.representation_consistency = True
+        self.consist_loss_weight = 1 
+        
+        #Train Dynamic consistency
+        self.Train_dynamic = False
         
         #reuse MCT
         self.num_branch = 5
@@ -128,8 +131,8 @@ class MuZeroConfig:
         self.reused_unroll_step = 5
         self.reused_reward_loss_weight = 1
         self.hidden_loss_weight = 0.1
-        
-        self.reuse_batch_size = self.batch_size * 10
+        self.reused_path_is_real = True
+        self.reuse_batch_size = self.batch_size * 1
 
     def visit_softmax_temperature_fn(self, trained_steps):
         """

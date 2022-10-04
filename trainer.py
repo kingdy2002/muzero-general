@@ -66,7 +66,7 @@ class Trainer:
             time.sleep(0.1)
 
         next_batch = replay_buffer.get_batch.remote()
-        next_reused_batch = replay_buffer.get_reused_path_batch.remote()
+        next_reused_batch = replay_buffer.get_reused_path_batch.remote(self.config.reused_path_is_real)
         # Training loop
         while self.training_step < self.config.training_steps and not ray.get(
             shared_storage.get_info.remote("terminate")
@@ -74,7 +74,7 @@ class Trainer:
             index_batch, batch = ray.get(next_batch)
             reused_index_batch,reused_batch = ray.get(next_reused_batch)
             next_batch = replay_buffer.get_batch.remote()
-            next_reused_batch = replay_buffer.get_reused_path_batch.remote()
+            next_reused_batch = replay_buffer.get_reused_path_batch.remote(self.config.reused_path_is_real)
             self.update_lr()
             (
                 priorities,
@@ -149,16 +149,19 @@ class Trainer:
             gradient_scale_batch,
             pc_value_batch
         ) = batch
-        reused_loss = 0
-
+        reused_reward_loss = 0
+        reused_hidden_loss = 0
         # Keep values as scalars for calculating the priorities for the prioritized replay
         target_value_scalar = numpy.array(target_value, dtype="float32")
         priorities = numpy.zeros_like(target_value_scalar)
 
         device = next(self.model.parameters()).device
         
-        if reused_batch :
+        if self.config.Train_dynamic :
             reused_reward_loss, reused_hidden_loss = self.cal_reused_loss(reused_batch,device)
+        
+        if self.config.representation_consistency :
+            consist_loss = self.get_consist_loss(reused_batch,device)
         
         if self.config.PER:
             weight_batch = torch.tensor(weight_batch.copy()).float().to(device)
@@ -188,8 +191,6 @@ class Trainer:
             target_pc_value = models.scalar_to_support(target_pc_value, self.config.support_size)
         # target_value: batch, num_unroll_steps+1, 2*support_size+1
         # target_reward: batch, num_unroll_steps+1, 2*support_size+1
-        projection_batch = []
-        projection_target_batch = []
         value_feature_batch = []
         value_feature_target_batch = []
         ## Generate predictions
@@ -199,8 +200,6 @@ class Trainer:
         predictions = [(value, reward, policy_logits)]
 
         #make representation self-supervised batch
-        if self.config.representation_consistency :
-            projection_batch.append( self.model.project(hidden_state,with_grad = True))
         for i in range(1, action_batch.shape[1]):
             value, reward, policy_logits, hidden_state = self.model.recurrent_inference(
                 hidden_state, action_batch[:, i]
@@ -209,13 +208,7 @@ class Trainer:
             hidden_state.register_hook(lambda grad: grad * 0.5)
             predictions.append((value, reward, policy_logits))
             #make representation self-supervised batch
-            if self.config.representation_consistency :
-                projection_batch.append( self.model.project(hidden_state,with_grad = True))
-                projection_target_batch.append(self.model.project(hidden_state,with_grad = False))
         # predictions: num_unroll_steps+1, 3, batch, 2*support_size+1 | 2*support_size+1 | 9 (according to the 2nd dim)
-        if self.config.representation_consistency :
-            projection_batch.pop()
-        ## Compute losses
         value_loss, pc_value_loss, reward_loss, policy_loss = (0, 0, 0, 0)
         value, reward, policy_logits = predictions[0]
         current_pc_value_loss = 0
@@ -255,14 +248,6 @@ class Trainer:
             numpy.abs(pred_value_scalar - target_value_scalar[:, 0])
             ** self.config.PER_alpha
         )
-        consist_loss = 0
-        if self.config.representation_consistency :
-            projection,projection_target = projection_batch[0],projection_target_batch[0]
-            consist_loss += self.consist_loss_func(projection,projection_target)        
-            for i in range(1, len(projection_batch)) :
-                projection,projection_target = projection_batch[i],projection_target_batch[i]
-                current_consist_loss = self.consist_loss_func(projection,projection_target).sum()
-                consist_loss += current_consist_loss
 
         for i in range(1, len(predictions)):
             value, reward, policy_logits = predictions[i]
@@ -315,7 +300,6 @@ class Trainer:
             pc_value_loss += current_pc_value_loss
             reward_loss += current_reward_loss
             policy_loss += current_policy_loss
-            
 
             # Compute priorities for the prioritized replay (See paper appendix Training)
             pred_value_scalar = (
@@ -337,14 +321,19 @@ class Trainer:
             # Correct PER bias by using importance-sampling (IS) weights
             loss *= weight_batch
         # Mean over batch dimension (pseudocode do a sum)
-        loss = loss.mean() + reused_reward_loss.mean() + reused_hidden_loss.mean()
+        
+        loss = loss.mean()
+        if self.config.Train_dynamic : 
+            loss +=  reused_reward_loss.mean() + reused_hidden_loss.mean()
+        if self.config.representation_consistency :
+            loss += consist_loss.mean()
         # Optimize
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
         self.training_step += 1
         
-        if reused_batch :
+        if self.config.Train_dynamic :
             reused_reward_loss = reused_reward_loss.mean().item()
             reused_hidden_loss = reused_hidden_loss.mean().item()
         
@@ -451,6 +440,38 @@ class Trainer:
         hidden_loss += curr_hidden_loss.mean() * weight_batch
         return reward_loss,hidden_loss
     
+    def get_consist_loss(self,batch,device) :
+        
+        (   
+            observation_batch,
+            action_batch,
+            reward_batch,
+            target_observation_batch,
+            weight_batch
+        ) = batch
+        if self.config.PER:
+            weight_batch = torch.tensor(weight_batch.copy()).float().to(device)
+        observation_batch = (
+            torch.tensor(numpy.array(observation_batch)).float().to(device)
+        )
+        target_observation_batch = (
+            torch.tensor(numpy.array(target_observation_batch)).float().to(device)
+        )
+        
+        value, reward, policy_logits, hidden_state = self.model.initial_inference(
+            observation_batch
+        )
+        
+        with torch.no_grad() :
+            value, reward, policy_logits, target_hidden_state = self.model.initial_inference(
+                target_observation_batch
+            )
+        projection_batch = self.model.project(hidden_state,with_grad = True)
+        projection_target_batch = self.model.project(target_hidden_state,with_grad = False)
+        consist_loss = self.consist_loss_func(projection_batch,projection_target_batch) 
+        consist_loss = consist_loss * weight_batch
+        
+        return consist_loss
     @staticmethod
     def loss_function(
         value,
@@ -504,7 +525,6 @@ class Trainer:
         hidden_loss = hidden_loss/ hidden_size
         
         return reward_loss, hidden_loss
-
     @staticmethod
     def consist_loss_func(f1, f2):
         """Consistency loss function: similarity loss
