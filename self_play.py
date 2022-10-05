@@ -54,6 +54,8 @@ class SelfPlay:
 
             else:
                 # Take the best action (no exploration) in test mode
+                print('start play game')
+                print()
                 game_history = self.play_game(
                     0,
                     self.config.temperature_threshold,
@@ -143,7 +145,6 @@ class SelfPlay:
                 stacked_observations = game_history.get_stacked_observations(
                     -1, self.config.stacked_observations, len(self.config.action_space)
                 )
-
                 # Choose the action
                 if opponent == "self" or muzero_player == self.game.to_play():
                     root, mcts_info = MCTS(self.config).run(
@@ -180,9 +181,7 @@ class SelfPlay:
                     )
                     game_history.heuristic_path_action.append([])
                     game_history.heuristic_real_rollout_path.append([])
-
                 observation, reward, done = self.game.step(action)
-
                 if render:
                     print(f"Played action: {self.game.action_to_string(action)}")
                     self.game.render()
@@ -264,9 +263,12 @@ class SelfPlay:
         env = copy.deepcopy(env)
         real_rollout_path = []
         for action in action_process :
-            env_result = env.step(action)
-            real_rollout_path.append(env_result)
-            if env_result[2] : 
+            if action in env.legal_actions() :
+                env_result = env.step(action)
+                real_rollout_path.append(env_result)
+                if env_result[2] : 
+                    break
+            else :
                 break
         return real_rollout_path
 
@@ -597,7 +599,6 @@ class GameHistory:
             stacked_observations = numpy.concatenate(
                 (stacked_observations, previous_observation)
             )
-
         return stacked_observations
 
     def get_stacked_observations_heuristic(
@@ -650,7 +651,6 @@ class GameHistory:
                 stacked_observations = numpy.concatenate(
                     (stacked_observations, previous_observation)
                 )
-
         return stacked_observations        
 class MinMaxStats:
     """
