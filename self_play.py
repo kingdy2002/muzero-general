@@ -296,7 +296,7 @@ class MCTS:
 
     def __init__(self, config):
         self.config = config
-    @logging_time
+
     def run(
         self,
         model,

@@ -328,7 +328,6 @@ class Minichess:
         return self.get_observation()
 
     def step(self, action):
-        assert(not (action in self.legal_actions()))
         if self.player == 1 :
             self.white_action_history.append(action)
             if len(self.white_action_history) > 2 :
@@ -359,7 +358,7 @@ class Minichess:
             if board[destination[0]][destination[1]] != 0 :
                 board[destination[0]][destination[1]] = 0
         self.board[des][destination[0]][destination[1]] = pei
-        winner = self.have_winner()
+        winner = self.who_winner()
         reward = 0
         if winner != 'No' :
             done = False
@@ -408,7 +407,7 @@ class Minichess:
         legal = []
         peice_loc = self.white_peice_loc if self.player == 1 else self.black_peice_loc
         legal_actions_per_peice_dict = self.legal_actions_per_peice()
-        for (key,value) in legal_actions_per_peice_dict.item() :
+        for (key,value) in legal_actions_per_peice_dict.items() :
             x,y = peice_loc[key]
             from_pos = (x + y*6)
             for action in value :
