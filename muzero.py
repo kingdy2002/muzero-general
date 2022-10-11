@@ -21,6 +21,9 @@ import self_play
 import shared_storage
 import trainer
 
+import psutil
+num_logical_cpus = psutil.cpu_count() - 4
+print('cpu count is ',num_logical_cpus)
 
 class MuZero:
     """
@@ -94,7 +97,7 @@ class MuZero:
         if 1 < self.num_gpus:
             self.num_gpus = math.floor(self.num_gpus)
 
-        ray.init(num_gpus=total_gpus, ignore_reinit_error=True)
+        ray.init(num_gpus=total_gpus,num_cpus=num_logical_cpus, ignore_reinit_error=True)
 
         # Checkpoint and replay buffer used to initialize workers
         self.checkpoint = {
@@ -353,7 +356,7 @@ class MuZero:
                     f'Win ratio : {win_ratio}. Last test reward: {info["total_reward"]:.2f}. Training step: {info["training_step"]}/{self.config.training_steps}. Played games: {info["num_played_games"]}. Loss: {info["total_loss"]:.2f}',
                     end="\r",
                 )
-                if win_ratio > 0.8 and counter > 100 :
+                if win_ratio > 0.95 and counter > 100 :
                     break
                 counter += 1
                 time.sleep(0.5)
@@ -744,4 +747,4 @@ if __name__ == "__main__":
 
 #CUDA_VISIBLE_DEVICES=2,3 nohup  python muzero.py connect4  &\n"
 #CUDA_VISIBLE_DEVICES=0,1 nohup  python muzero.py connect4  &\n"
-#CUDA_VISIBLE_DEVICES=1,2,3,4 python muzero.py
+#CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7,8 python muzero.py

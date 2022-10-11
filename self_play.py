@@ -8,6 +8,21 @@ import torch
 import models
 import copy
 
+def logging_time(original_fn):
+    import time
+    from functools import wraps
+
+    @wraps(original_fn)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = original_fn(*args, **kwargs)
+
+        end_time = time.time()
+        print("WorkingTime[{}]: {} sec".format(original_fn.__name__, end_time - start_time))
+        return result
+    return wrapper
+
+
 @ray.remote
 class SelfPlay:
     """
@@ -36,7 +51,7 @@ class SelfPlay:
             shared_storage.get_info.remote("terminate")
         ):
             self.model.set_weights(ray.get(shared_storage.get_info.remote("weights")))
-
+            total_episode += 1
             if not test_mode:
                 game_history = self.play_game(
                     self.config.visit_softmax_temperature_fn(
@@ -54,8 +69,6 @@ class SelfPlay:
 
             else:
                 # Take the best action (no exploration) in test mode
-                print('start play game')
-                print()
                 game_history = self.play_game(
                     0,
                     self.config.temperature_threshold,
@@ -63,7 +76,7 @@ class SelfPlay:
                     "self" if len(self.config.players) == 1 else self.config.opponent,
                     self.config.muzero_player,
                 )
-                total_episode += 1
+                
                 # Save to the shared storage
                 shared_storage.set_info.remote(
                     {
@@ -233,7 +246,7 @@ class SelfPlay:
             raise NotImplementedError(
                 'Wrong argument: "opponent" argument should be "self", "human", "expert" or "random"'
             )
-
+    
     @staticmethod
     def select_action(node, temperature):
         """
@@ -283,7 +296,7 @@ class MCTS:
 
     def __init__(self, config):
         self.config = config
-
+    @logging_time
     def run(
         self,
         model,
@@ -334,13 +347,11 @@ class MCTS:
                 hidden_state,
                 root_predicted_value
             )
-
         if add_exploration_noise:
             root.add_exploration_noise(
                 dirichlet_alpha=self.config.root_dirichlet_alpha,
                 exploration_fraction=self.config.root_exploration_fraction,
             )
-
         min_max_stats = MinMaxStats()
 
         max_tree_depth = 0
@@ -349,18 +360,15 @@ class MCTS:
             node = root
             search_path = [node]
             current_tree_depth = 0
-
             while node.expanded():
                 current_tree_depth += 1
                 action, node = self.select_child(node, min_max_stats)
                 search_path.append(node)
-
                 # Players play turn by turn
                 if virtual_to_play + 1 < len(self.config.players):
                     virtual_to_play = self.config.players[virtual_to_play + 1]
                 else:
                     virtual_to_play = self.config.players[0]
-
             # Inside the search tree we use the dynamics function to obtain the next hidden
             # state given an action and the previous hidden state
             parent = search_path[-2]
@@ -378,9 +386,7 @@ class MCTS:
                 hidden_state,
                 value
             )
-
-            self.backpropagate(search_path, value, virtual_to_play, min_max_stats)
-
+            self.backpropagate(search_path, value, virtual_to_play, min_max_stats) 
             max_tree_depth = max(max_tree_depth, current_tree_depth)
         action_processes = []
         for i in range(self.config.num_branch) :
@@ -393,8 +399,9 @@ class MCTS:
             "action_process":action_process,
             "action_processes":action_processes
         }
+        
         return root, extra_info
-
+    
     def select_child(self, node, min_max_stats):
         """
         Select the child with the highest UCB score.
@@ -410,6 +417,8 @@ class MCTS:
                 if self.ucb_score(node, child, min_max_stats) == max_ucb
             ]
         )
+
+        
         return action, node.children[action]
 
     def ucb_score(self, parent, child, min_max_stats):
@@ -435,9 +444,8 @@ class MCTS:
             )
         else:
             value_score = 0
-
         return prior_score + value_score
-
+    
     def backpropagate(self, search_path, value, to_play, min_max_stats):
         """
         At the end of a simulation, we propagate the evaluation all the way up the tree
@@ -463,7 +471,7 @@ class MCTS:
 
         else:
             raise NotImplementedError("More than two player mode not implemented.")
-
+    
     def extract_heuristic_path(self,root,min_max_stats):
         len = self.config.heuristic_len
         search_action_process = []
@@ -493,7 +501,7 @@ class Node:
         if self.visit_count == 0:
             return 0
         return self.value_sum / self.visit_count
-
+    
     def expand(self, actions, to_play, reward, policy_logits, hidden_state , cal_value):
         """
         We expand a node using the value, reward and policy prediction obtained from the

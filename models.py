@@ -3,6 +3,20 @@ from abc import ABC, abstractmethod
 
 import torch
 
+def logging_time(original_fn):
+    import time
+    from functools import wraps
+
+    @wraps(original_fn)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = original_fn(*args, **kwargs)
+
+        end_time = time.time()
+        print("WorkingTime[{}]: {} sec".format(original_fn.__name__, end_time - start_time))
+        return result
+    return wrapper
+
 
 class MuZeroNetwork:
     def __new__(cls, config):
@@ -644,7 +658,7 @@ class MuZeroResidualNetwork(AbstractNetwork):
             policy_logits,
             encoded_state,
         )
-
+    
     def recurrent_inference(self, encoded_state, action):
         next_encoded_state, reward = self.dynamics(encoded_state, action)
         policy_logits, value = self.prediction(next_encoded_state)

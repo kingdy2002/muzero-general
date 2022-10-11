@@ -1,5 +1,7 @@
 import datetime
 import pathlib
+import time
+from winreg import REG_OPTION_OPEN_LINK
 
 import numpy
 import torch
@@ -8,6 +10,10 @@ from .abstract_game import AbstractGame
 
 
 # This is a Game wrapper for open_spiel games. It allows you to run any game in the open_spiel library.
+
+from stockfish import Stockfish
+
+stockfish = Stockfish(path="/home/dongyoung/stockfish_15_linux_x64_bmi2/stockfish_15_src/src/stockfish")
 
 try:
     import pyspiel
@@ -22,6 +28,20 @@ except ImportError:
 # The game you want to run. See https://github.com/deepmind/open_spiel/blob/master/docs/games.md for a list of games
 game = pyspiel.load_game("chess")
 
+def logging_time(original_fn):
+    import time
+    from functools import wraps
+
+    @wraps(original_fn)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = original_fn(*args, **kwargs)
+
+        end_time = time.time()
+        print("WorkingTime[{}]: {} sec".format(original_fn.__name__, end_time - start_time))
+        return result
+    return wrapper
+
 
 class MuZeroConfig:
     def __init__(self):
@@ -31,7 +51,7 @@ class MuZeroConfig:
         self.game = game
 
         self.seed = 0  # Seed for numpy, torch and the game
-        self.max_num_gpus = 4  # Fix the maximum number of GPUs to use. It's usually faster to use a single GPU (set it to 1) if it has enough memory. None will use every GPUs available
+        self.max_num_gpus = 8  # Fix the maximum number of GPUs to use. It's usually faster to use a single GPU (set it to 1) if it has enough memory. None will use every GPUs available
 
 
 
@@ -48,13 +68,13 @@ class MuZeroConfig:
 
 
         ### Self-Play
-        self.num_workers = 20  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.num_workers = 4  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = True
-        self.max_moves = 200  # Maximum number of moves if game is not finished before
+        self.max_moves = 100  # Maximum number of moves if game is not finished before
         
-        self.num_simulations = 400  # Number of future moves self-simulated
+        self.num_simulations = 200  # Number of future moves self-simulated
         self.discount = 1  # Chronological discount of the reward
-        self.temperature_threshold = None  # Number of moves before dropping the temperature given by visit_softmax_temperature_fn to 0 (ie selecting the best action). If None, visit_softmax_temperature_fn is used every time
+        self.temperature_threshold = 100  # Number of moves before dropping the temperature given by visit_softmax_temperature_fn to 0 (ie selecting the best action). If None, visit_softmax_temperature_fn is used every time
 
         # Root prior exploration noise
         self.root_dirichlet_alpha = 0.3
@@ -72,8 +92,8 @@ class MuZeroConfig:
 
         # Residual Network
         self.downsample = False  # Downsample observations before representation network, False / "CNN" (lighter) / "resnet" (See paper appendix Network Architecture)
-        self.blocks = 12  # Number of blocks in the ResNet
-        self.channels = 128  # Number of channels in the ResNet
+        self.blocks = 18  # Number of blocks in the ResNet
+        self.channels = 512  # Number of channels in the ResNet
         self.reduced_channels_reward = 2  # Number of channels in reward head
         self.reduced_channels_value = 2  # Number of channels in value head
         self.reduced_channels_policy = 4  # Number of channels in policy head
@@ -161,7 +181,12 @@ class MuZeroConfig:
         Returns:
             Positive float.
         """
-        return 1
+        if trained_steps < 0.5 * self.training_steps:
+            return 1.0
+        elif trained_steps < 0.75 * self.training_steps:
+            return 0.5
+        else:
+            return 0.25
 
 
 class Game(AbstractGame):
@@ -171,6 +196,7 @@ class Game(AbstractGame):
 
     def __init__(self, seed=None):
         self.env = Spiel()
+
 
     def step(self, action):
         """
@@ -182,7 +208,12 @@ class Game(AbstractGame):
         Returns:
             The new observation, the reward and a boolean if the game has ended.
         """
+        print('serial : ',self.env.serialize())
+        print('serial 2 : ',self.env.serialize_game_and_state())
         observation, reward, done = self.env.step(action)
+        self.env.board = self.env.game.BoardFromFEN(self.env.observation_string())
+        print()
+        
         return observation, reward * 20, done
 
     def to_play(self):
@@ -267,6 +298,7 @@ class Spiel:
         self.board = self.game.new_initial_state()
         self.player = 1
 
+        
     def to_play(self):
         return 0 if self.player == 1 else 1
 
@@ -276,7 +308,11 @@ class Spiel:
         return self.get_observation()
 
     def step(self, action):
-        self.board = self.board.child(action)
+        if isinstance(action, str) :
+            self.game.deserialize_state(action)
+        
+        else :
+            self.board = self.board.child(action)
 
         done = self.board.is_terminal()
 
@@ -320,6 +356,44 @@ class Spiel:
     def render(self):
         print(self.board)
 
-    def action_to_string(self,action) :
+    def action_to_string1(self,action) :
+        return self.board.action_to_string(self.to_play(),action)
+
+    def action_to_string2(self,action) :
         return self.game.action_to_string(self.to_play(),action)
+
+    def serialize_game_and_state(self) :
+        return pyspiel.serialize_game_and_state(self.game,self.board)
+
+    def deserialize_game_and_state(self,str) :
+        self.game,self.board =  pyspiel.serialize_game_and_state(str)
+        
+    def observation_string(self) :
+        return self.board.observation_string()
+        
+    def serialize(self) :
+        return self.board.serialize()
     
+    def expert_action(self):
+        stockfish.set_fen_position(self.observation_string())
+        action = stockfish.get_best_move()
+        stockfish.make_moves_from_current_position([action])
+        return stockfish.get_fen_position()
+    
+    def action_to_uci(self,action) :
+        kUnderPromotionDirectionToOffset = [[0,1],[1,1],[-1,1]]
+        kUnderPromotionIndexToType = ['rook','bishop','knight']
+        xy = int(action / 73)
+        x = int(xy / 8)
+        y = int(xy % 8)
+        destination_index = action % 73
+        is_under_promotion = destination_index < 9
+        if is_under_promotion :
+            promotion_index = int(destination_index / 3);
+            direction_index = int(destination_index % 3);
+            promotion_type = kUnderPromotionIndexToType[promotion_index]
+            offset = kUnderPromotionDirectionToOffset[direction_index]
+
+        else :
+            destination_index -= 9
+            offset = 
