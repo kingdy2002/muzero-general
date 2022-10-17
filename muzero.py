@@ -353,9 +353,22 @@ class MuZero:
                     f'Win ratio : {win_ratio}. Last test reward: {info["total_reward"]:.2f}. Training step: {info["training_step"]}/{self.config.training_steps}. Played games: {info["num_played_games"]}. Loss: {info["total_loss"]:.2f}',
                     end="\r",
                 )
-                if win_ratio > 0.8 and counter > 100 :
-                    break
                 counter += 1
+                if self.config.save_model and counter % 10000 == 0:
+                    # Persist replay buffer to disk
+                    path = self.config.results_path / "replay_buffer.pkl"
+                    print(f"\n\nPersisting replay buffer games to disk at {path}")
+                    pickle.dump(
+                        {
+                            "buffer": self.replay_buffer,
+                            "num_played_games": self.checkpoint["num_played_games"],
+                            "num_played_steps": self.checkpoint["num_played_steps"],
+                            "num_reanalysed_games": self.checkpoint["num_reanalysed_games"],
+                        },
+                        open(path, "wb"),
+                    )
+                
+                
                 time.sleep(0.5)
         except KeyboardInterrupt:
             pass
@@ -744,3 +757,4 @@ if __name__ == "__main__":
 
 #CUDA_VISIBLE_DEVICES=2,3 nohup  python muzero.py connect4  &\n"
 #CUDA_VISIBLE_DEVICES=2,3 python muzero.py
+#nohup  python muzero.py mini_chess &

@@ -64,7 +64,6 @@ class Trainer:
         # Wait for the replay buffer to be filled
         while ray.get(shared_storage.get_info.remote("num_played_games")) < 1:
             time.sleep(0.1)
-
         next_batch = replay_buffer.get_batch.remote()
         next_reused_batch = replay_buffer.get_reused_path_batch.remote()
         # Training loop
@@ -87,7 +86,6 @@ class Trainer:
                 reused_reward_loss,
                 reused_hidden_loss
             ) = self.update_weights(batch,reused_batch=reused_batch)
-
             if self.config.PER:
                 # Save new priorities in the replay buffer (See https://arxiv.org/abs/1803.00933)
                 replay_buffer.update_priorities.remote(priorities, index_batch)
@@ -150,7 +148,6 @@ class Trainer:
             pc_value_batch
         ) = batch
         reused_loss = 0
-
         # Keep values as scalars for calculating the priorities for the prioritized replay
         target_value_scalar = numpy.array(target_value, dtype="float32")
         priorities = numpy.zeros_like(target_value_scalar)
@@ -347,6 +344,7 @@ class Trainer:
         if reused_batch :
             reused_reward_loss = reused_reward_loss.mean().item()
             reused_hidden_loss = reused_hidden_loss.mean().item()
+        
         
         if self.config.PC_constraint and self.config.representation_consistency : 
             return (

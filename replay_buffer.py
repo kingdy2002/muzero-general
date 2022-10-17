@@ -470,12 +470,9 @@ class ReplayBuffer:
             if game_pos == 0 :
                 while game_pos == 0 :
                     game_pos, pos_prob = self.sample_position(game_history)
-            
             observations ,actions, rewards, target_observation = self.make_reused_target(
                 game_history, game_pos
             )
-            
-
             index_batch.append([game_id, game_pos])
             action_batch.extend(actions)
             observation_batch.extend(observations)
@@ -484,7 +481,6 @@ class ReplayBuffer:
             if self.config.PER:
                 for i in range(len(actions)) :
                     weight_batch.append(1 / (self.total_samples * game_prob * pos_prob))
-
         if self.config.PER:
             weight_batch = numpy.array(weight_batch, dtype="float32") / max(
                 weight_batch

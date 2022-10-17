@@ -264,6 +264,8 @@ class SelfPlay:
         env = copy.deepcopy(env)
         real_rollout_path = []
         for action in action_process :
+            if action not in env.legal_actions() :
+                break
             env_result = env.step(action)
             real_rollout_path.append(env_result)
             if env_result[2] : 
