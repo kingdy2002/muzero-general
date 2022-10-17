@@ -32,9 +32,9 @@ class MuZeroConfig:
 
 
         ### Self-Play
-        self.num_workers = 20  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.num_workers = 12  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = True
-        self.max_moves = 60  # Maximum number of moves if game is not finished before
+        self.max_moves = 50  # Maximum number of moves if game is not finished before
         self.num_simulations = 200  # Number of future moves self-simulated
         self.discount = 1  # Chronological discount of the reward
         self.temperature_threshold = None  # Number of moves before dropping the temperature given by visit_softmax_temperature_fn to 0 (ie selecting the best action). If None, visit_softmax_temperature_fn is used every time
@@ -96,7 +96,7 @@ class MuZeroConfig:
 
         ### Replay Buffer
         self.replay_buffer_size = 10000  # Number of self-play games to keep in the replay buffer
-        self.num_unroll_steps = 5  # Number of game moves to keep for every batch element
+        self.num_unroll_steps = 30  # Number of game moves to keep for every batch element
         self.td_steps = 50  # Number of steps in the future to take into account for calculating the target value
         self.PER = True  # Prioritized Replay (See paper appendix Training), select in priority the elements in the replay buffer which are unexpected for the network
         self.PER_alpha = 0.5  # How much prioritization is used, 0 corresponding to the uniform case, paper suggests 1
@@ -130,7 +130,7 @@ class MuZeroConfig:
         #reuse MCT
         self.num_branch = 5
         self.reused_ratio = 1
-        self.reused_unroll_step = 5
+        self.reused_unroll_step = 30
         self.reused_reward_loss_weight = 1
         self.hidden_loss_weight = 0.1
         self.reused_path_is_real = False
@@ -263,8 +263,8 @@ class Minichess:
             'r2':(5,0),
             'n1':(1,0),
             'n2':(4,0),
-            'q':(2,0),
-            'k':(3,0)
+            'q':(3,0),
+            'k':(2,0)
         }
         self.black_peice_loc = {
             'p1':(0,4),
@@ -277,8 +277,8 @@ class Minichess:
             'r2':(5,5),
             'n1':(1,5),
             'n2':(4,5),
-            'q':(2,5),
-            'k':(3,5)
+            'q':(3,5),
+            'k':(2,5)
         }
         #pawn
         for i in range(6) :
@@ -365,6 +365,7 @@ class Minichess:
             if self.player == -1 and winner == 'black' :
                 reward = 1
         self.player *= -1
+        
         return self.get_observation(), reward, done
 
     def get_observation(self):
@@ -473,20 +474,20 @@ class Minichess:
                     if loc == (x,y) :
                         white_peice_loc[peice] = destination
                         if self.peice_loc[destination[0]][destination[1]] != 0 :
-                            for peice in life_peice['black'] :
-                                black_loc = black_peice_loc[peice]
+                            for black_peice in life_peice['black'] :
+                                black_loc = black_peice_loc[black_peice]
                                 if black_loc == destination :
-                                    life_peice['black'].remove(peice)
+                                    life_peice['black'].remove(black_peice)
         else :
             for peice in life_peice['black'] :
                     loc = black_peice_loc[peice]
                     if loc == (x,y) :
                         black_peice_loc[peice] = destination
                         if self.peice_loc[destination[0]][destination[1]] != 0 :
-                            for peice in life_peice['white'] :
-                                white_loc = white_peice_loc[peice]
+                            for white_peice in life_peice['white'] :
+                                white_loc = white_peice_loc[white_peice]
                                 if white_loc == destination :
-                                    life_peice['white'].remove(peice)
+                                    life_peice['white'].remove(white_peice)
                                     
 
         return life_peice, white_peice_loc, black_peice_loc

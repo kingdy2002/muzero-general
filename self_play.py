@@ -182,7 +182,6 @@ class SelfPlay:
                     game_history.heuristic_real_rollout_path.append([])
 
                 observation, reward, done = self.game.step(action)
-
                 if render:
                     print(f"Played action: {self.game.action_to_string(action)}")
                     self.game.render()

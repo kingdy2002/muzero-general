@@ -345,7 +345,7 @@ class MuZero:
                 writer.add_scalar("3.Loss/Reused_hidden_loss", info["reused_hidden_loss"], counter)
                 if episode != info["total_episode"] :
                     episode = info["total_episode"]
-                    last_win.append(1 if info["muzero_reward"] == 10 else 0)
+                    last_win.append(1 if info["muzero_reward"] > 0 else 0)
                     win_ratio = sum(last_win)/len(last_win)
                 writer.add_scalar("4.Benchmark/1.Win_ratio", win_ratio, counter)
                 writer.add_scalar("4.Benchmark/2.Total_episode", info["total_episode"], counter)
