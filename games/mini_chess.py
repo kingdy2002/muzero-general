@@ -406,16 +406,18 @@ class Minichess:
                 legal.append(from_pos+ action*36)
         return legal
 
-    def legal_actions_per_peice(self) :
+    def legal_actions_per_peice(self,player = None) :
         """
         Returns:
             dict[str : List[int]]:
             posible action per each peice name 
         """
+        if player == None :
+            player = self.player
         legal_actions = {}
-        now_player = 'white' if self.player == 1 else 'black'
+        now_player = 'white' if player == 1 else 'black'
         life_peice = self.life_peice[now_player]
-        peice_loc = self.white_peice_loc if self.player == 1 else self.black_peice_loc
+        peice_loc = self.white_peice_loc if player == 1 else self.black_peice_loc
         for peice in life_peice :
             loc = peice_loc[peice]
             peice_id = self.peice.chess_name2number(peice)
@@ -423,7 +425,7 @@ class Minichess:
             actions = []
             for action in can_action :
                 move = self.peice.action2move(action)
-                destination = (loc[0]+move[0], loc[1]+move[1] * self.player)
+                destination = (loc[0]+move[0], loc[1]+move[1] * player)
                 if (not self.in_board(destination)) :
                     continue
                 Obstacle = False
@@ -436,7 +438,7 @@ class Minichess:
                                 Obstacle = True
                                 break
                     if move[1] != 0 :
-                        for i in range(0, move[1]* self.player, 1 if move[1]* self.player > 0 else -1) :
+                        for i in range(0, move[1]* player, 1 if move[1]* player > 0 else -1) :
                             if i == 0 :
                                 continue
                             if self.peice_loc[loc[0]][loc[1]+i] != 0 :
@@ -444,11 +446,11 @@ class Minichess:
                                 break
                 if Obstacle :
                     continue
-                if (self.peice_loc[destination[0]][destination[1]] * self.player > 0) :
+                if (self.peice_loc[destination[0]][destination[1]] * player > 0) :
                         continue
                 if peice_id == 1 :
                     if action in [28,29] :
-                        if self.peice_loc[destination[0]][destination[1]] * self.player >= 0 :
+                        if self.peice_loc[destination[0]][destination[1]] * player >= 0 :
                             continue
                     if action in [0,1] :
                         if self.peice_loc[destination[0]][destination[1]] != 0 :

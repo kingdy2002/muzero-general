@@ -20,8 +20,8 @@ class MuZeroConfig:
 
 
         ### Game
-        self.observation_shape = (13, 6, 6)  # Dimensions of the game observation, must be 3D (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
-        self.action_space = list(range(32*36))  # Fixed list of all possible actions. You should only edit the length
+        self.observation_shape = (14, 8, 8)  # Dimensions of the game observation, must be 3D (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
+        self.action_space = list(range(152))  # Fixed list of all possible actions. You should only edit the length
         self.players = list(range(2))  # List of players. You should only edit the length
         self.stacked_observations = 0  # Number of previous observations and previous actions to add to the current observation
 
@@ -32,9 +32,9 @@ class MuZeroConfig:
 
 
         ### Self-Play
-        self.num_workers = 20  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.num_workers = 12  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = True
-        self.max_moves = 50  # Maximum number of moves if game is not finished before
+        self.max_moves = 200  # Maximum number of moves if game is not finished before
         self.num_simulations = 200  # Number of future moves self-simulated
         self.discount = 1  # Chronological discount of the reward
         self.temperature_threshold = None  # Number of moves before dropping the temperature given by visit_softmax_temperature_fn to 0 (ie selecting the best action). If None, visit_softmax_temperature_fn is used every time
@@ -96,7 +96,7 @@ class MuZeroConfig:
 
         ### Replay Buffer
         self.replay_buffer_size = 10000  # Number of self-play games to keep in the replay buffer
-        self.num_unroll_steps = 5  # Number of game moves to keep for every batch element
+        self.num_unroll_steps = 10  # Number of game moves to keep for every batch element
         self.td_steps = 50  # Number of steps in the future to take into account for calculating the target value
         self.PER = True  # Prioritized Replay (See paper appendix Training), select in priority the elements in the replay buffer which are unexpected for the network
         self.PER_alpha = 0.5  # How much prioritization is used, 0 corresponding to the uniform case, paper suggests 1
@@ -162,6 +162,7 @@ class Game(AbstractGame):
         Returns:
             The new observation, the reward and a boolean if the game has ended.
         """
+        #print(self.action_to_string(action))
         observation, reward, done = self.env.step(action)
         return observation, reward, done
 
@@ -227,7 +228,8 @@ class Game(AbstractGame):
         Returns:
             String representing the action.
         """
-        return f"Play column {action_number + 1}"
+        moved_peice,action_id = self.env.action_parse(action_number)
+        return f"{moved_peice} act {action_id}"
 
 
 class Minichess:
@@ -247,16 +249,17 @@ class Minichess:
         #black is 1
     def reset(self):
         self.player = 1
+        self.play_turn = 0
         self.black_repetitions = 0
         self.white_repetitions = 0
         self.white_action_history = deque(maxlen = 3)
         self.black_action_history = deque(maxlen = 3)
-        self.last_action = -1
-        self.board = numpy.zeros((12, 6, 6), dtype="int32")
-        self.peice_loc = numpy.zeros((6, 6), dtype="int32")
+        self.board = numpy.zeros((12, 8, 8), dtype="int32")
+        self.peice_loc = numpy.zeros((8, 8), dtype="int32")
+        self.move_count_board = numpy.zeros((8, 8), dtype="int32")
         self.life_peice = {
-            'white' : ['p1','p2','p3','p4','p5','p6','p7','p8','r1','r2','n1','n2','b1','b2','q','k'],
-            'black' : ['p1','p2','p3','p4','p5','p6','p7','p8','r1','r2','n1','n2','b1','b2','q','k']
+            'white' : ['p1','p2','p3','p4','p5','p6','p7','p8','r1','r2','n1','n2','b1','b2','q1','k'],
+            'black' : ['p1','p2','p3','p4','p5','p6','p7','p8','r1','r2','n1','n2','b1','b2','q1','k']
         }
         self.white_peice_loc = {
             'p1':(0,1),
@@ -273,7 +276,7 @@ class Minichess:
             'n2':(6,0),
             'b1':(2,0),
             'b2':(5,0),
-            'q':(3,0),
+            'q1':(3,0),
             'k':(4,0)
         }
         self.black_peice_loc = {
@@ -291,7 +294,7 @@ class Minichess:
             'n2':(6,7),
             'b1':(2,7),
             'b2':(5,7),
-            'q':(3,7),
+            'q1':(3,7),
             'k':(4,7)
         }
         self.white_peice = {
@@ -331,11 +334,11 @@ class Minichess:
             'k':king(1,(4,7),'black')
         }
         #pawn
-        for i in range(6) :
+        for i in range(8) :
             self.board[0][i][1] = 1
-            self.board[1][i][4] = 1
+            self.board[1][i][6] = 1
             self.peice_loc[i][1] = 1
-            self.peice_loc[i][4] = -1
+            self.peice_loc[i][6] = -1
         #rook
         self.board[2][0][0] = 1
         self.board[2][7][0] = 1
@@ -374,14 +377,55 @@ class Minichess:
         self.peice_loc[4][0] = 6
         self.peice_loc[4][7] = -6
         return self.get_observation()
-    def step(self,action) :
-        pass
+
+    def step(self,action):
+        self.apply_action(action)
+        observation = self.get_observation()
+        reward = self.have_winner()
+        done = self.is_terminal()
+        self.player *= -1
+        return observation, reward, done
+
     def get_observation(self,) :
-        pass
+        board_to_play = numpy.full((1, 8, 8), 1 if self.player == 1 else -1, dtype="int32")
+        if self.player == 1 :
+            if self.white_repetitions == 0 :
+                repetition = numpy.zeros((2, 8, 8), dtype="int32")
+            elif self.white_repetitions == 1 :
+                repetition1 = numpy.full((8, 8), 1, dtype="int32")
+                repetition2 = numpy.full((8, 8), 0, dtype="int32")
+                repetition = numpy.stack((repetition1,repetition2))
+            else :
+                repetition1 = numpy.full((8, 8), 0, dtype="int32")
+                repetition2 = numpy.full((8, 8), 1, dtype="int32")
+                repetition = numpy.stack((repetition1,repetition2))
+        else :
+            if self.black_repetitions == 0 :
+                repetition = numpy.zeros((2, 8, 8), dtype="int32")
+            elif self.black_repetitions == 1 :
+                repetition1 = numpy.full((8, 8), 1, dtype="int32")
+                repetition2 = numpy.full((8, 8), 0, dtype="int32")
+                repetition = numpy.stack((repetition1,repetition2))
+            else :
+                repetition1 = numpy.full((8, 8), 0, dtype="int32")
+                repetition2 = numpy.full((8, 8), 1, dtype="int32")
+                repetition = numpy.stack((repetition1,repetition2))
+        board = numpy.flip(self.board,axis=1) if self.player == -1 else self.board    
+        move_count = numpy.flip(self.move_count_board,axis=1) if self.player == -1 else self.move_count_board
+        move_count = numpy.expand_dims(move_count,axis= 0)
+        return numpy.concatenate((board,board_to_play,move_count),axis=0)
+    
+    
     def legal_actions(self,player = None):
         if player == None :
             player = self.player
+        legal_actions = []
         legal_actions_dict = self.legal_actions_per_peice(player)
+        for peice, legal_action in legal_actions_dict.items() :
+            for i in legal_action :
+                helper = self.peice.peice_2_action_helper[peice]
+                legal_actions.append(helper + i)
+        return legal_actions
         
     def legal_actions_per_peice(self,player = None) :
         legal_actions_dict = {}
@@ -407,79 +451,139 @@ class Minichess:
         return legal_actions_dict
     
     def apply_action(self, action,player = None) :
-        pass
-    
+        if player == None :
+            player = self.player
+        self.apply_action_white(action) if player == 1 else self.apply_action_black(action)
+        if self.player == 1 :
+            self.white_action_history.append(action)
+            if len(self.white_action_history) > 2 :
+                if self.white_action_history[0] == action:
+                    self.white_repetitions += 1
+        else :
+            self.black_action_history.append(action)
+            if len(self.black_action_history) > 2 :
+                if self.black_action_history[0] == action:
+                    self.black_repetitions += 1
+        self.play_turn += 1
+        
+    def apply_action_white(self, action) :
+        peice, action_id = self.action_parse(action)
+        peice_inform = self.white_peice[peice]
+        past_loc = peice_inform.loc
+        peice_inform.move(action_id)
+        new_loc = peice_inform.loc
+        board_index = (self.peice.peice_index[peice] - 1) * 2 
+        self.board[board_index][past_loc[0]][past_loc[1]] = 0
+        self.board[board_index][new_loc[0]][new_loc[1]] = 1
+        self.peice_loc[past_loc[0]][past_loc[1]] = 0
+        self.peice_loc[new_loc[0]][new_loc[1]] = self.peice.peice_index[peice]
+        self.white_peice_loc[peice] =  new_loc
+        self.move_count_board[new_loc[0]][new_loc[1]] += 1 
+        del_black_peice = None
+        for black_peice, black_loc in self.black_peice_loc.items() :
+            if new_loc == black_loc :
+                del_black_peice = black_peice
+                del self.black_peice[black_peice]
+                self.life_peice['black'].remove(black_peice)
+                board_index = (self.peice.peice_index[black_peice] - 1) * 2 + 1
+                self.board[board_index][new_loc[0]][new_loc[1]] = 0
+        if del_black_peice != None :
+            del self.black_peice_loc[del_black_peice]
+    def apply_action_black(self,action) : 
+        peice, action_id = self.action_parse(action)
+        peice_inform = self.black_peice[peice]
+        past_loc = peice_inform.loc
+        peice_inform.move(action_id)
+        new_loc = peice_inform.loc
+        board_index = (self.peice.peice_index[peice] - 1) * 2 + 1
+        self.board[board_index][past_loc[0]][past_loc[1]] = 0
+        self.board[board_index][new_loc[0]][new_loc[1]] = 1
+        self.peice_loc[past_loc[0]][past_loc[1]] = 0
+        self.peice_loc[new_loc[0]][new_loc[1]] = self.peice.peice_index[peice] * -1
+        self.black_peice_loc[peice] =  new_loc
+        self.move_count_board[new_loc[0]][new_loc[1]] += 1 
+        del_white_peice = None
+        for white_peice, white_loc in self.white_peice_loc.items() :
+            if new_loc == white_loc :
+                del_white_peice = white_peice
+                del self.white_peice[white_peice]
+                self.life_peice['white'].remove(white_peice)
+                board_index = (self.peice.peice_index[white_peice] - 1) * 2
+                self.board[board_index][new_loc[0]][new_loc[1]] = 0
+        if del_white_peice != None :
+            del self.white_peice_loc[del_white_peice]
     def legal_action_straight(self,loc,player =None):
+        
         legal_list = []
         x,y = loc
         if player == None :
             player = self.player
-        for i in range(16) : 
-            if i < 8 :
-                temp_x = x - 1
-                while temp_x > 0 : 
-                    if not self.in_board((temp_x,y)) : 
-                        break
-                    if self.peice_loc[temp_x][y] == 0 :
-                        legal_list.append(temp_x)
-                        temp_x -= 1
-                    elif self.peice_loc[temp_x][y] == player : 
-                        break
-                    else :
-                        legal_list.append(temp_x)
-                        break
-                temp_x = x + 1
-                while temp_x < 8 : 
-                    if not self.in_board((temp_x,y)) : 
-                        break                    
-                    if self.peice_loc[temp_x][y] == 0 :
-                        legal_list.append(temp_x)
-                        temp_x += 1
-                    
-                    elif self.peice_loc[temp_x][y] == player : 
-                        break
-                    else :
-                        legal_list.append(temp_x)
-                        break
+        temp_x = x - 1
+        while temp_x >= 0 : 
+            if not self.in_board((temp_x,y)) : 
+                break
+            if self.peice_loc[temp_x][y] == 0 :
+                legal_list.append(temp_x)
+                temp_x -= 1
+            elif self.peice_loc[temp_x][y] * player > 0 : 
+                break
             else :
-                temp_y = y - 1
-                while temp_y > 0 : 
-                    if not self.in_board((x,temp_y)) : 
-                        break
-                    if self.peice_loc[x][temp_y] == 0 :
-                        if player == 1 :
-                            legal_list.append(temp_y+8)
-                        else :
-                            legal_list.append(7-temp_y+8)
-                        temp_x -= 1
-                    
-                    elif self.peice_loc[temp_x][y] == player : 
-                        break
-                    else :
-                        if player == 1 :
-                            legal_list.append(temp_y+8)
-                        else :
-                            legal_list.append(7-temp_y+8)
-                        break
-                temp_y = y + 1
-                while temp_y < 8 : 
-                    if not self.in_board((x,temp_y)) : 
-                        break                    
-                    if self.peice_loc[temp_x][y] == 0 :
-                        if player == 1 :
-                            legal_list.append(temp_y+8)
-                        else :
-                            legal_list.append(7-temp_y+8)
-                        temp_x += 1
-                    
-                    elif self.peice_loc[temp_x][y] == player : 
-                        break
-                    else :
-                        if player == 1 :
-                            legal_list.append(temp_y+8)
-                        else :
-                            legal_list.append(7-temp_y+8)
-                        break
+                legal_list.append(temp_x)
+                break 
+            
+        temp_x = x + 1
+        while temp_x < 8 : 
+            if not self.in_board((temp_x,y)) : 
+                break                    
+            if self.peice_loc[temp_x][y] == 0 :
+                legal_list.append(temp_x)
+                temp_x += 1
+            
+            elif self.peice_loc[temp_x][y] * player > 0 : 
+                break
+            else :
+                legal_list.append(temp_x)
+                break
+            
+        temp_y = y - 1
+        while temp_y >= 0 : 
+            if not self.in_board((x,temp_y)) : 
+                break
+            if self.peice_loc[x][temp_y] == 0 :
+                if player == 1 :
+                    legal_list.append(temp_y+8)
+                else :
+                    legal_list.append(7-temp_y+8)
+                temp_y -= 1
+            
+            elif self.peice_loc[x][temp_y] * player > 0 : 
+                break
+            else :
+                if player == 1 :
+                    legal_list.append(temp_y+8)
+                else :
+                    legal_list.append(7-temp_y+8)
+                break
+            
+        temp_y = y + 1
+        while temp_y < 8 : 
+            if not self.in_board((x,temp_y)) : 
+                break                    
+            if self.peice_loc[x][temp_y] == 0 :
+                if player == 1 :
+                    legal_list.append(temp_y+8)
+                else :
+                    legal_list.append(7-temp_y+8)
+                temp_y += 1
+            
+            elif self.peice_loc[x][temp_y] * player > 0 : 
+                break
+            else :
+                if player == 1 :
+                    legal_list.append(temp_y+8)
+                else :
+                    legal_list.append(7-temp_y+8)
+                break
         return legal_list       
     
     def legal_action_diagnoal(self,loc,player=None):
@@ -487,65 +591,62 @@ class Minichess:
         x,y = loc
         if player == None :
             player = self.player
-        for i in range(16) : 
-            if i < 8 :
-                temp_x = x - 1
-                temp_y = y - player
-                while temp_x > 0 : 
-                    if not self.in_board((temp_x,temp_y)) : 
-                        break
-                    if self.peice_loc[temp_x][temp_y] == 0 :
-                        legal_list.append(temp_x)
-                        temp_x -= 1
-                        temp_y -= player
-                    elif self.peice_loc[temp_x][temp_y] == player : 
-                        break
-                    else :
-                        legal_list.append(temp_x)
-                        break
-                temp_x = x + 1
-                temp_y = y + player
-                while temp_x < 8 : 
-                    if not self.in_board((temp_x,temp_y)) : 
-                        break
-                    if self.peice_loc[temp_x][temp_y] == 0 :
-                        legal_list.append(temp_x)
-                        temp_x += 1
-                        temp_y += player
-                    elif self.peice_loc[temp_x][temp_y] == player : 
-                        break
-                    else :
-                        legal_list.append(temp_x)
-                        break
+        temp_x = x - 1
+        temp_y = y - player
+        while temp_x >= 0 : 
+            if not self.in_board((temp_x,temp_y)) : 
+                break
+            if self.peice_loc[temp_x][temp_y] == 0 :
+                legal_list.append(temp_x)
+                temp_x -= 1
+                temp_y -= player
+            elif self.peice_loc[temp_x][temp_y] * player > 0 : 
+                break
             else :
-                temp_x = x - 1
-                temp_y = y + player
-                while temp_x > 0 : 
-                    if not self.in_board((temp_x,temp_y)) : 
-                        break
-                    if self.peice_loc[temp_x][temp_y] == 0 :
-                        legal_list.append(temp_x+8)
-                        temp_x -= 1
-                        temp_y += player
-                    elif self.peice_loc[temp_x][temp_y] == player : 
-                        break
-                    else :
-                        legal_list.append(temp_x+8)
-                        break
-                temp_x = x + 1
-                temp_y = y - player
-                while temp_x < 8 : 
-                    if not self.in_board((temp_x,temp_y)) : 
-                        break
-                    if self.peice_loc[temp_x][temp_y] == 0 :
-                        legal_list.append(temp_x+8)
-                        temp_x += 1
-                        temp_y -= player
-                    elif self.peice_loc[temp_x][temp_y] == player : 
-                        break
-                    else :
-                        legal_list.append(temp_x+8)
-                        break
+                legal_list.append(temp_x)
+                break
+        temp_x = x + 1
+        temp_y = y + player
+        while temp_x < 8 : 
+            if not self.in_board((temp_x,temp_y)) : 
+                break
+            if self.peice_loc[temp_x][temp_y] == 0 :
+                legal_list.append(temp_x)
+                temp_x += 1
+                temp_y += player
+            elif self.peice_loc[temp_x][temp_y] * player > 0 : 
+                break
+            else :
+                legal_list.append(temp_x)
+                break
+        temp_x = x - 1
+        temp_y = y + player
+        while temp_x >= 0 : 
+            if not self.in_board((temp_x,temp_y)) : 
+                break
+            if self.peice_loc[temp_x][temp_y] == 0 :
+                legal_list.append(temp_x+8)
+                temp_x -= 1
+                temp_y += player
+            elif self.peice_loc[temp_x][temp_y] * player > 0 : 
+                break
+            else :
+                legal_list.append(temp_x+8)
+                break
+        temp_x = x + 1
+        temp_y = y - player
+        while temp_x < 8 : 
+            if not self.in_board((temp_x,temp_y)) : 
+                break
+            if self.peice_loc[temp_x][temp_y] == 0 :
+                legal_list.append(temp_x+8)
+                temp_x += 1
+                temp_y -= player
+            elif self.peice_loc[temp_x][temp_y] * player > 0 : 
+                break
+            else :
+                legal_list.append(temp_x+8)
+                break
         return legal_list
     
     def legal_action_knight(self,loc,player = None)  :
@@ -572,7 +673,7 @@ class Minichess:
                 new_pos = (-2,-1)
             if not self.in_board((x+new_pos[0],y+new_pos[1]*player)):
                 continue
-            if self.peice_loc[x+new_pos[0]][y+new_pos[1]*player] == player :
+            if self.peice_loc[x+new_pos[0]][y+new_pos[1]*player] * player > 0 :
                 continue
             legal_list.append(action_index)
         return legal_list
@@ -603,13 +704,13 @@ class Minichess:
                 new_pos = (-1,1)
                 if not self.in_board((x+new_pos[0],y+new_pos[1]*player)):
                     continue
-                if self.peice_loc[x+new_pos[0]][y+new_pos[1]*player] != player * -1 :
+                if self.peice_loc[x+new_pos[0]][y+new_pos[1]*player] * player >= 0 :
                     continue
             else :
                 new_pos = (1,1)
                 if not self.in_board((x+new_pos[0],y+new_pos[1]*player)):
                     continue
-                if self.peice_loc[x+new_pos[0]][y+new_pos[1]*player] != player * -1 :
+                if self.peice_loc[x+new_pos[0]][y+new_pos[1]*player] * player >= 0 :
                     continue
             legal_list.append(action_index)
         return legal_list
@@ -638,7 +739,7 @@ class Minichess:
                 new_pos = (-1,1)
             if not self.in_board((x+new_pos[0],y+new_pos[1]*player)):
                 continue
-            if self.peice_loc[x+new_pos[0]][y+new_pos[1]*player] == player  :
+            if self.peice_loc[x+new_pos[0]][y+new_pos[1]*player] * player > 0  :
                 continue
             legal_list.append(action_index)
         return legal_list
@@ -663,19 +764,10 @@ class Minichess:
         y = loc[1]
         return 0<=x<8 and 0<=y<8
     
-    def who_winner(self):
-        if 'k' not in self.life_peice['white'] :
-            return 'black'
-        
-        if 'k' not in self.life_peice['black'] :
-            return 'white'
-        if self.black_repetitions == 3 :
-            return 'white'
-        
-        if self.white_repetitions == 3 :
-            return 'black'
-        
-        return 'No'
+    def have_winner(self):
+        if 'k' not in self.life_peice['white'] or  'k' not in self.life_peice['black']:
+            return 1
+        return 0
     
     def action_parse(self,action) :
         if 0<= action < 4*8 :
@@ -713,8 +805,28 @@ class Minichess:
         
     def render(self):
         print(self.peice_loc)
-        
-        
+    
+    def check_stalemate(self,):
+        king_move = list(range(144,152))
+        for i in self.legal_actions(1) :
+            if i not in king_move :
+                return False
+        for i in self.legal_actions(-1) :
+            if i not in king_move :
+                return False
+        return True
+    
+    def is_terminal(self) :
+        done = True if self.have_winner() != 0 else False
+        if self.check_stalemate() :
+            done = True
+        if not done :
+            if self.play_turn == 200 :
+                done = True
+        return done
+    
+    def legal_actions_map(self,peice,legal_actions) : 
+        legal_actions
 class ChessPeice() :
     def __init__(self) :
         self.action_space = 32
@@ -734,7 +846,7 @@ class ChessPeice() :
             'n2' : 3,
             'b1' : 4,
             'b2' : 4,
-            'q' : 5,
+            'q1' : 5,
             'k' : 6 
         }
 
@@ -753,74 +865,35 @@ class ChessPeice() :
             'n2' : 12,
             'b1' : 13,
             'b2' : 14,
-            'q' : 15,
+            'q1' : 15,
             'k' : 16 
         }
+
+        self.peice_2_action_helper = {
+            'p1' : 0,
+            'p2' : 4,
+            'p3' : 8,
+            'p4' : 12,
+            'p5' : 16,
+            'p6' : 20,
+            'p7' : 24,
+            'p8' : 28,
+            'r1' : 32,
+            'r2' : 48,
+            'n1' : 64,
+            'n2' : 72,
+            'b1' : 80,
+            'b2' : 96,
+            'q1' : 112,
+            'k' : 144 
+        }
+
 
     def chess_name2index(self, name) :
         return self.peice[name]
 
     def chess_name2identical_index(self, name) :
         return self.peice_identical_index[name]
-
-    def move_index2move(self, action) :
-        if action < 20 :
-            dir = action // 5
-            dis = action % 5
-            dis += 1
-            if dir == 0 :
-                return (0,dis)
-            elif dir == 1 :
-                return (dis,0)
-            elif dir == 2 :
-                return (0,-dis)
-            else :
-                return (-dis,0)
-            
-        action -= 20
-        
-        if action < 8 :
-            if action == 0 :
-                return (-2,1)
-            elif action == 1 :
-                return (-1,2)
-            elif action == 2 :
-                return (1,2)
-            elif action == 3 :
-                return (2,1)
-            elif action == 4 :
-                return (2,-1)
-            elif action == 5 :
-                return (1,-2)
-            elif action == 6 :
-                return (-1,-2)
-            else :
-                return (-2,-1)
-            
-        action -= 8
-        
-        if action == 0 :
-            return(-1,1)
-        elif action == 1 :
-            return (1,1)
-        elif action == 2 :
-            return (1,-1)
-        else :
-            return (-1,-1)
-        
-    def peice_can_move_index(self,peice_id):
-        
-        if peice_id == 1 :
-            return [0,1,28,29]
-        elif peice_id == 2 :
-            return [i for i in range(20)]
-        elif peice_id == 3 :
-            return [i for i in range(20,28)]
-        elif peice_id == 4 :
-            return [i for i in range(20)] + [i for i in range(28,32)]
-        else :
-            return [i for i in range(28,32)]
-
         
 class pawn :
     #index mean nth pawn
@@ -838,6 +911,7 @@ class pawn :
         #4~7 same action and promotion to queen
         #8~11 same action and promotion to knight
         #in this function not implement promotion
+        init_action_index = action_index
         x,y = self.loc
         if action_index == 0 :
             new_pos = (x,y + self.player)
@@ -850,6 +924,8 @@ class pawn :
             new_pos = (x+1,y + self.player)
         self.can_two_move = False
         self.loc = new_pos
+        if not (0<=self.loc[0] < 8 and  0<=self.loc[1] < 8) :
+            print('pawn action_index : ',init_action_index,'now loc',self.loc[0],self.loc[1],'player is ',self.player)
 
 class rook : 
     #index mean nth night
@@ -865,6 +941,7 @@ class rook :
     def move(self,action_index) :
         #action range 0~7 mean move to x is action
         #action range 8~15 mean move to y is action
+        init_action_index = action_index
         x,y = self.loc
         if 0<= action_index < 8 :
             self.loc = (action_index,y)
@@ -875,7 +952,9 @@ class rook :
             else :
                 self.loc = (x,7-action_index)
         self.moved = True
-        
+        if not (0<=self.loc[0] < 8 and  0<=self.loc[1] < 8) :
+            print('rook action_index : ',init_action_index,'now loc',self.loc[0],self.loc[1],'player is ',self.player)
+
 class knight :
     #index mean nth night
     #loc mean start position
@@ -889,6 +968,7 @@ class knight :
     def move(self,action_index) :
         #action index rnage 0~7
         x,y = self.loc
+        init_action_index = action_index
         if action_index == 0 :
             new_pos = (-2,1)
         elif action_index == 1 :
@@ -907,7 +987,9 @@ class knight :
             new_pos = (-2,-1)
             
         self.loc = (x + new_pos[0], y + new_pos[1]*self.player)
-        
+        if not (0<=self.loc[0] < 8 and  0<=self.loc[1] < 8) :
+            print('knight action_index : ',init_action_index,'now loc',self.loc[0],self.loc[1],'player is ',self.player)
+
 class bishop :
     #index mean nth night
     #loc mean start position
@@ -922,6 +1004,7 @@ class bishop :
         #action index range 0~7 right up
         #action index range 8~15 left up
         x,y = self.loc
+        init_action_index = action_index
         if 0<=action_index<8 :
             new_y = y-x*self.player
             new_x = 0
@@ -930,8 +1013,10 @@ class bishop :
             action_index -= 8
             new_y = y+x*self.player
             new_x = 0
-            self.loc = (new_x-action_index,new_y-action_index * self.player)
-            
+            self.loc = (new_x+action_index,new_y-action_index * self.player)
+        
+        if not (0<=self.loc[0] < 8 and  0<=self.loc[1] < 8) :
+            print('bishop action_index : ',init_action_index,'now loc',self.loc[0],self.loc[1],'player is ',self.player)
             
 class queen :
     def __init__(self,index , loc , team) -> None:
@@ -944,15 +1029,16 @@ class queen :
         #action index range 0~7 right up
         #action index range 8~15 left up
         x,y = self.loc
+        init_action_index = action_index
         if 0<= action_index < 8 :
             self.loc = (action_index,y)
-        elif 8<= action_index < 15 :
+        elif 8<= action_index < 16 :
             action_index-=8
             if self.player == 1 :
                 self.loc = (x,action_index)
             else :
                 self.loc = (x,7-action_index)       
-        elif 16<=action_index<23 :
+        elif 16<=action_index<24 :
             action_index -= 16
             new_y = y-x*self.player
             new_x = 0
@@ -961,8 +1047,10 @@ class queen :
             action_index -= 24
             new_y = y+x*self.player
             new_x = 0
-            self.loc = (new_x-action_index,new_y-action_index * self.player)
-            
+            self.loc = (new_x+action_index,new_y-action_index * self.player)
+        if not (0<=self.loc[0] < 8 and  0<=self.loc[1] < 8) :
+            print('queen action_index : ',init_action_index,'now loc',self.loc[0],self.loc[1],'player is ',self.player)
+
 class king :
     def __init__(self,index , loc , team) -> None:
         self.index = index
@@ -972,6 +1060,7 @@ class king :
         self.action_count = 8
     def move(self,action_index) :
         x,y = self.loc
+        init_action_index = action_index
         if action_index == 0 :
             new_pos = (0,1)
         elif action_index == 1 :
@@ -989,3 +1078,5 @@ class king :
         else :
             new_pos = (-1,1)
         self.loc = (x + new_pos[0], y + new_pos[1]*self.player)
+        if not (0<=self.loc[0] < 8 and  0<=self.loc[1] < 8) :
+            print('king action_index : ',init_action_index,'now loc',self.loc[0],self.loc[1],'player is ',self.player)

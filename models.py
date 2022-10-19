@@ -449,6 +449,7 @@ class PredictionNetwork(torch.nn.Module):
         value = value.view(-1, self.block_output_size_value)
         policy = policy.view(-1, self.block_output_size_policy)
         value = self.fc_value(value)
+        value = (torch.sigmoid(value) - 0.5) * 2
         policy = self.fc_policy(policy)
         return policy, value
 
