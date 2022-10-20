@@ -35,7 +35,8 @@ class SelfPlay:
         ) < self.config.training_steps and not ray.get(
             shared_storage.get_info.remote("terminate")
         ):
-            self.model.set_weights(ray.get(shared_storage.get_info.remote("weights")))
+            if self.config.self_play_update_interval % shared_storage.get_info.remote("training_step") == 0 :
+                self.model.set_weights(ray.get(shared_storage.get_info.remote("weights")))
 
             if not test_mode:
                 game_history = self.play_game(

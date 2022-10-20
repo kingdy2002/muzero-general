@@ -4,6 +4,7 @@ from urllib.error import ContentTooShortError
 
 import numpy
 import torch
+import copy
 
 from collections import deque
 
@@ -20,7 +21,7 @@ class MuZeroConfig:
 
 
         ### Game
-        self.observation_shape = (14, 8, 8)  # Dimensions of the game observation, must be 3D (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
+        self.observation_shape = (39, 8, 8)  # Dimensions of the game observation, must be 3D (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
         self.action_space = list(range(152))  # Fixed list of all possible actions. You should only edit the length
         self.players = list(range(2))  # List of players. You should only edit the length
         self.stacked_observations = 0  # Number of previous observations and previous actions to add to the current observation
@@ -96,10 +97,10 @@ class MuZeroConfig:
 
         ### Replay Buffer
         self.replay_buffer_size = 10000  # Number of self-play games to keep in the replay buffer
-        self.num_unroll_steps = 10  # Number of game moves to keep for every batch element
+        self.num_unroll_steps = 5  # Number of game moves to keep for every batch element
         self.td_steps = 50  # Number of steps in the future to take into account for calculating the target value
         self.PER = True  # Prioritized Replay (See paper appendix Training), select in priority the elements in the replay buffer which are unexpected for the network
-        self.PER_alpha = 0.5  # How much prioritization is used, 0 corresponding to the uniform case, paper suggests 1
+        self.PER_alpha = 1  # How much prioritization is used, 0 corresponding to the uniform case, paper suggests 1
 
         # Reanalyze (See paper appendix Reanalyse)
         self.use_last_model_value = True  # Use the last model to provide a fresher, stable n-step value (See paper appendix Reanalyze)
@@ -252,6 +253,9 @@ class Minichess:
         self.play_turn = 0
         self.black_repetitions = 0
         self.white_repetitions = 0
+        self.board_que = deque(maxlen=7)
+        self.board_que.append(numpy.zeros((12, 8, 8), dtype="int32"))
+        self.board_que.append(numpy.zeros((12, 8, 8), dtype="int32"))
         self.white_action_history = deque(maxlen = 3)
         self.black_action_history = deque(maxlen = 3)
         self.board = numpy.zeros((12, 8, 8), dtype="int32")
@@ -376,6 +380,7 @@ class Minichess:
         self.board[11][4][7] = 1
         self.peice_loc[4][0] = 6
         self.peice_loc[4][7] = -6
+        self.board_que.append(copy.copy(self.board))
         return self.get_observation()
 
     def step(self,action):
@@ -410,10 +415,10 @@ class Minichess:
                 repetition1 = numpy.full((8, 8), 0, dtype="int32")
                 repetition2 = numpy.full((8, 8), 1, dtype="int32")
                 repetition = numpy.stack((repetition1,repetition2))
-        board = numpy.flip(self.board,axis=1) if self.player == -1 else self.board    
-        move_count = numpy.flip(self.move_count_board,axis=1) if self.player == -1 else self.move_count_board
-        move_count = numpy.expand_dims(move_count,axis= 0)
-        return numpy.concatenate((board,board_to_play,move_count),axis=0)
+        board_1 = numpy.flip(self.board_que[-1],axis=1) if self.player == -1 else self.board_que[-1]
+        board_2 = numpy.flip(self.board_que[-2],axis=1) if self.player == -1 else self.board_que[-2]  
+        board_3 = numpy.flip(self.board_que[-3],axis=1) if self.player == -1 else self.board_que[-3]  
+        return numpy.concatenate((board_1,board_2,board_3,board_to_play,repetition),axis=0)
     
     
     def legal_actions(self,player = None):
@@ -454,16 +459,13 @@ class Minichess:
         if player == None :
             player = self.player
         self.apply_action_white(action) if player == 1 else self.apply_action_black(action)
-        if self.player == 1 :
-            self.white_action_history.append(action)
-            if len(self.white_action_history) > 2 :
-                if self.white_action_history[0] == action:
-                    self.white_repetitions += 1
-        else :
-            self.black_action_history.append(action)
-            if len(self.black_action_history) > 2 :
-                if self.black_action_history[0] == action:
-                    self.black_repetitions += 1
+        new_board = copy.copy(self.board)
+        self.board_que.append(new_board)
+        if numpy.array_equal(self.board_que[-1],self.board_que[-3]) :
+            if player == 1 :
+                self.white_repetitions += 1
+            else :
+                self.black_repetitions += 1
         self.play_turn += 1
         
     def apply_action_white(self, action) :
@@ -696,6 +698,8 @@ class Minichess:
                 new_pos = (0,2)
                 if not first_move :
                     continue
+                if not self.in_board((x,y+player)) :
+                    continue
                 if not self.in_board((x+new_pos[0],y+new_pos[1]*player)):
                     continue
                 if self.peice_loc[x+new_pos[0]][y+new_pos[1]*player] != 0 :
@@ -767,6 +771,8 @@ class Minichess:
     def have_winner(self):
         if 'k' not in self.life_peice['white'] or  'k' not in self.life_peice['black']:
             return 1
+        if self.black_repetitions == 3 or self.white_repetitions == 3 :
+            return -1
         return 0
     
     def action_parse(self,action) :
