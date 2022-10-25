@@ -60,16 +60,18 @@ class Trainer:
                 copy.deepcopy(initial_checkpoint["optimizer_state"])
             )
 
-    def continuous_update_weights(self, replay_buffer, shared_storage):
+    def continuous_update_weights(self, replay_buffer, shared_storage , buffer_queue):
         # Wait for the replay buffer to be filled
-        while ray.get(shared_storage.get_info.remote("num_played_games")) < 1:
+        while ray.get(shared_storage.get_info.remote("num_played_games")) < self.config.trainning_start:
             time.sleep(0.1)
         next_batch = replay_buffer.get_batch.remote()
         next_reused_batch = replay_buffer.get_reused_path_batch.remote()
         # Training loop
         while self.training_step < self.config.training_steps and not ray.get(
             shared_storage.get_info.remote("terminate")
-        ):
+        ):  
+            while buffer_queue.get_len == 0 :
+                time.sleep(1)
             index_batch, batch = ray.get(next_batch)
             reused_index_batch,reused_batch = ray.get(next_reused_batch)
             next_batch = replay_buffer.get_batch.remote()
@@ -175,7 +177,9 @@ class Trainer:
         # target_reward: batch, num_unroll_steps+1
         # target_policy: batch, num_unroll_steps+1, len(action_space)
         # gradient_scale_batch: batch, num_unroll_steps+1
-
+        print('target_value is :',target_value)
+        print('target_policy is : ',target_policy)
+        print()
         target_value = models.scalar_to_support(target_value, self.config.support_size)
         target_reward = models.scalar_to_support(
             target_reward, self.config.support_size

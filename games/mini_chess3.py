@@ -33,7 +33,7 @@ class MuZeroConfig:
 
 
         ### Self-Play
-        self.num_workers = 20  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.num_workers = 12  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = True
         self.max_moves = 100  # Maximum number of moves if game is not finished before
         self.num_simulations = 200  # Number of future moves self-simulated
@@ -89,6 +89,8 @@ class MuZeroConfig:
         self.weight_decay = 1e-4  # L2 weights regularization
         self.momentum = 0.9  # Used only if optimizer is SGD
 
+        self.trainning_start = 1
+
         # Exponential learning rate schedule
         self.lr_init = 0.003  # Initial learning rate
         self.lr_decay_rate = 1  # Set it to 1 to use a constant learning rate
@@ -106,7 +108,7 @@ class MuZeroConfig:
         # Reanalyze (See paper appendix Reanalyse)
         self.use_last_model_value = True  # Use the last model to provide a fresher, stable n-step value (See paper appendix Reanalyze)
         self.reanalyse_on_gpu = True
-
+        self.reanalyse_ratio = 0.5
 
 
         ### Adjust the self play / training ratio to avoid over/underfitting

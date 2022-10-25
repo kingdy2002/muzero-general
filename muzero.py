@@ -21,6 +21,7 @@ import self_play
 import shared_storage
 import trainer
 
+from shared_storage import QueueStorage
 
 class MuZero:
     """
@@ -135,6 +136,8 @@ class MuZero:
         self.replay_buffer_worker = None
         self.shared_storage_worker = None
 
+        self.batch_storage = QueueStorage(15, 20)
+
     def train(self, log_in_tensorboard=True):
         """
         Spawn ray workers and launch the training.
@@ -175,14 +178,14 @@ class MuZero:
                 num_cpus=0,
                 num_gpus=num_gpus_per_worker  if self.config.replay_buffer_on_gpu else 0,
             ).remote(
-            self.checkpoint, self.replay_buffer, self.config , self.shared_storage_worker
+            self.checkpoint, self.replay_buffer, self.config , self.shared_storage_worker, self.batch_storage
         )
 
         if self.config.use_last_model_value:
             self.reanalyse_worker = replay_buffer.Reanalyse.options(
                 num_cpus=0,
                 num_gpus=num_gpus_per_worker if self.config.reanalyse_on_gpu else 0,
-            ).remote(self.checkpoint, self.config)
+            ).remote(self.checkpoint, self.config, self.batch_storage,)
 
         self.self_play_workers = [
             self_play.SelfPlay.options(
@@ -205,10 +208,10 @@ class MuZero:
             for self_play_worker in self.self_play_workers
         ]
         self.training_worker.continuous_update_weights.remote(
-            self.replay_buffer_worker, self.shared_storage_worker
+            self.replay_buffer_worker, self.shared_storage_worker, self.batch_storage
         )
         if self.config.use_last_model_value:
-            self.reanalyse_worker.reanalyse.remote(
+            self.reanalyse_worker._prepare_target_gpu.remote(
                 self.replay_buffer_worker, self.shared_storage_worker
             )
 

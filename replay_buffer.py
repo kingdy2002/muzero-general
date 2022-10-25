@@ -8,6 +8,7 @@ import torch
 import models
 
 from self_play import MCTS
+from shared_storage import QueueStorage
 
 @ray.remote
 class ReplayBuffer:
@@ -15,7 +16,7 @@ class ReplayBuffer:
     Class which run in a dedicated thread to store played games and generate batch.
     """
 
-    def __init__(self, initial_checkpoint, initial_buffer, config, shared_storage):
+    def __init__(self, initial_checkpoint, initial_buffer, config, shared_storage, batch_storage):
         self.config = config
         self.shared_storage = shared_storage
         self.buffer = copy.deepcopy(initial_buffer)
@@ -36,6 +37,8 @@ class ReplayBuffer:
         self.model.set_weights(initial_checkpoint["weights"])
         self.model.to(torch.device("cuda" if self.config.replay_buffer_on_gpu else "cpu"))
         self.model.eval()
+
+        self.batch_storage = batch_storage
 
     def save_game(self, game_history, shared_storage=None):
         if self.config.PER:
@@ -74,6 +77,39 @@ class ReplayBuffer:
     def get_buffer(self):
         return self.buffer
 
+    
+    def get_batch_for_reanalyze(self) :
+        (
+            index_batch,
+            observation_batch,
+        ) = ([], [])
+        print('do get_batch_for_reanalyze')
+        weight_batch = [] if self.config.PER else None
+        game_historys = []
+        list_game_pos = []
+        for game_id, game_history, game_prob in self.sample_n_games(
+            self.config.batch_size
+        ):
+            game_pos, pos_prob = self.sample_position(game_history)
+            game_historys.append(game_history)
+            list_game_pos.append(game_pos)
+            index_batch.append([game_id, game_pos])
+            observation_batch.append(
+                game_history.get_stacked_observations(
+                    game_pos,
+                    self.config.stacked_observations,
+                    len(self.config.action_space),
+                )
+            )
+            if self.config.PER:
+                weight_batch.append(1 / (self.total_samples * game_prob * pos_prob))
+
+        if self.config.PER:
+            weight_batch = numpy.array(weight_batch, dtype="float32") / max(
+                weight_batch
+            )
+        return index_batch, weight_batch
+    
     def get_batch(self):
         (
             index_batch,
@@ -86,15 +122,16 @@ class ReplayBuffer:
             pc_value_batch
         ) = ([], [], [], [], [], [], [], [])
         weight_batch = [] if self.config.PER else None
-
         game_historys = []
         list_game_pos = []
-        
-        for game_id, game_history, game_prob in self.sample_n_games(
-            self.config.batch_size
-        ):
-            game_pos, pos_prob = self.sample_position(game_history)
-
+        input_countext = None
+        while input_countext == None :
+            input_countext = self.batch_storage.pop()
+            time.sleep(1)
+        index_batch, weight_batch,= input_countext
+        for index in index_batch :
+            game_id, game_pos = index
+            game_history = self.buffer[game_id]
             game_historys.append(game_history)
             list_game_pos.append(game_pos)
 
@@ -126,14 +163,6 @@ class ReplayBuffer:
                 ]
                 * len(actions)
             )
-            if self.config.PER:
-                weight_batch.append(1 / (self.total_samples * game_prob * pos_prob))
-
-        if self.config.PER:
-            weight_batch = numpy.array(weight_batch, dtype="float32") / max(
-                weight_batch
-            )
-
         if self.config.PC_constraint :
             pc_value_batch = self.get_pc_value_batch(game_historys,list_game_pos)
             lis = []
@@ -603,7 +632,7 @@ class Reanalyse:
     See paper appendix Reanalyse.
     """
 
-    def __init__(self, initial_checkpoint, config):
+    def __init__(self, initial_checkpoint, config ,batch_storage):
         self.config = config
 
         # Fix random generator seed
@@ -615,11 +644,76 @@ class Reanalyse:
         self.model.set_weights(initial_checkpoint["weights"])
         self.model.to(torch.device("cuda" if self.config.reanalyse_on_gpu else "cpu"))
         self.model.eval()
+        
+        self.batch_storage = batch_storage
 
         self.num_reanalysed_games = initial_checkpoint["num_reanalysed_games"]
 
+    def _prepare_target_gpu(self,replay_buffer,shared_storage):
+        while ray.get(shared_storage.get_info.remote("num_played_games")) < self.config.trainning_start:
+            time.sleep(0.1)
+        while ray.get(
+            shared_storage.get_info.remote("training_step")
+        ) < self.config.training_steps and not ray.get(
+            shared_storage.get_info.remote("terminate")
+        ):
+            self.model.set_weights(ray.get(shared_storage.get_info.remote("weights")))
+            input_countext = ray.get(replay_buffer.get_batch_for_reanalyze.remote())
+            index_batch, weight_batch = input_countext
+            # target reward, value
+            reanalyse_ratio_batch_size = int(self.config.batch_size * self.config.reanalyse_ratio)
+            for index in index_batch[:reanalyse_ratio_batch_size] :
+                history = ray.get(
+                    replay_buffer.get_buffer.remote()
+                    )[index[0]]
+                history_pos = index[1]
+                history_len = len(history.observation_history)
+                last_pos = history_pos + self.config.num_unroll_steps
+                if history_pos + self.config.num_unroll_steps > history_len :
+                    last_pos = history_len
+                for i in range(history_pos,last_pos) :
+                    observation = history.get_stacked_observations(
+                                    i,
+                                    self.config.stacked_observations,
+                                    len(self.config.action_space),
+                                )
+                    root, mcts_info = MCTS(self.config).run(
+                        self.model,
+                        observation,
+                        history.legal_actions_history[i],
+                        history.to_play_history[i],
+                        True,
+                    )
+                    observation = (
+                        torch.tensor(observation)
+                        .float()
+                        .unsqueeze(0)
+                        .to(next(self.model.parameters()).device)
+                    )
+                    values = models.support_to_scalar(
+                        self.model.initial_inference(observation)[0],
+                        self.config.support_size,
+                    )
+                    history.reanalysed_predicted_root_values = (
+                        torch.squeeze(values).detach().cpu().numpy()
+                    )
+                    sum_visits = sum(child.visit_count for child in root.children.values())
+                    history.child_visits[i] = [
+                        root.children[a].visit_count / sum_visits
+                        if a in root.children
+                        else 0
+                        for a in self.config.action_space
+                    ]
+                        
+                replay_buffer.update_game_history.remote(index[0], history)
+                self.num_reanalysed_games += 1
+                shared_storage.set_info.remote(
+                    "num_reanalysed_games", self.num_reanalysed_games
+                )
+            self.batch_storage.push(input_countext)
+
     def reanalyse(self, replay_buffer, shared_storage):
-        while ray.get(shared_storage.get_info.remote("num_played_games")) < 1:
+        while ray.get(shared_storage.get_info.remote("num_played_games")) < self.config.trainning_start:
             time.sleep(0.1)
 
         while ray.get(
