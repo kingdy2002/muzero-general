@@ -757,4 +757,4 @@ if __name__ == "__main__":
 
 #CUDA_VISIBLE_DEVICES=2,3 nohup  python muzero.py connect4  &\n"
 #CUDA_VISIBLE_DEVICES=2,3 python muzero.py
-#nohup  python muzero.py mini_chess3 &
+#nohup  python muzero.py mini_chess2 &
